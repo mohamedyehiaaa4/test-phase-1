@@ -1,0 +1,19 @@
+# Requires Python 3.11+
+# Requirements Discovery Agent (requirements_discovery_agent.ipynb)
+openai>=1.40                        # model calls (DeepSeek and any OpenAI-compatible API)
+pydantic>=2.5
+python-dotenv>=1.0
+langgraph>=0.4,<2                   # workflow: human-in-the-loop pauses (interrupt) and checkpoints
+langgraph-checkpoint-sqlite>=2.0     # saves paused chats in .checkpoints/discovery.sqlite
+
+# Default store (skip only when DISCOVERY_STORE=memory)
+supabase>=2.0
+
+# Planning workflow (planning_workflow.ipynb and streamlit_app_planning_workflow.py)
+langchain-deepseek>=0.1               # the model gateway of the notebook
+langchain-core>=0.3
+streamlit>=1.40                       # the chat window (streamlit run streamlit_app_planning_workflow.py)
+
+# Notebook runtime (skip if you already have Jupyter / the VS Code Jupyter extension)
+ipykernel
+jupyterlab

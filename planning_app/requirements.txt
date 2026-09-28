@@ -1,0 +1,10 @@
+# Python 3.12+ (tested on 3.14)
+langgraph>=1.2
+langgraph-checkpoint-postgres>=3.1   # graph progress saved in Supabase Postgres
+psycopg[binary,pool]>=3.2
+langchain-core>=1.0
+langchain-deepseek>=1.0
+pydantic>=2.8
+python-dotenv>=1.0
+supabase>=2.20                       # async client for the approved results
+streamlit>=1.40

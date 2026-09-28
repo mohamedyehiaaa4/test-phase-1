@@ -1,0 +1,9 @@
+# secrets
+.env
+planning_app/.env
+
+# local environment and caches
+.venv/
+__pycache__/
+.checkpoints/
+*.sqlite*
