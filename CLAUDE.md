@@ -4,6 +4,9 @@ Graduation project: six planning agents (discovery → requirements → stories 
 under one routing main agent, built with LangGraph, DeepSeek, Supabase and Streamlit. Local only.
 
 - New code lives in `planning_app/`. The plan is `planning_app/PLAN.md`: follow its phases in order.
+- `planning_app/LATER.md` lists ideas already discussed with the user but not built yet. Read it before changing
+  the checks, the review screen or the sprint logic.
+- `planning_app/JIRA.md` holds the discussed (not approved) Jira integration design. Read it before any Jira work.
 - `planning_workflow.ipynb` and `streamlit_app_planning_workflow.py` are the OLD system. Read them only to learn
   what the system must do. Never copy or adapt their code, structure, design or approach.
 - Out of scope for now: tests, tooling (lint/CI/pre-commit), hosting, git, login.
