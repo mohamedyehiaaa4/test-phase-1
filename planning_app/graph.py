@@ -191,8 +191,9 @@ def build(llm, db, checkpointer):
     g.add_edge(START, "load")
     g.add_conditional_edges("load", to_step, [*ORDER, "idle"])
     for name in ORDER:
-        g.add_conditional_edges(name, lambda s: {"submit": "review", "no_impact": "save", "handoff": "router"}[
-            s["outcome"]["kind"]], ["review", "save", "router"])
+        g.add_conditional_edges(name, lambda s: {  # no_impact in change mode: nothing changed, nothing to save
+            "submit": "review", "no_impact": "save" if s["mode"] == "check" else "load", "handoff": "router"}[
+            s["outcome"]["kind"]], ["review", "save", "load", "router"])
     g.add_conditional_edges("review", lambda s: "save" if s.get("outcome") else s["step"], ["save", *ORDER])
     g.add_conditional_edges("save", lambda s: s["step"] if s.get("note") else "load", ["load", *ORDER])
     g.add_edge("router", "guard")
@@ -210,8 +211,12 @@ async def open_graph():
     async def use_langgraph_schema(conn):
         await conn.execute("set search_path to langgraph")
 
+    # Long model calls leave connections idle for minutes and Supabase's pooler may close them: test each connection
+    # before use, drop idle ones early, and keep the TCP connection alive.
     pool = AsyncConnectionPool(os.environ["SUPABASE_DB_URL"], open=False, configure=use_langgraph_schema,
-                               kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row})
+                               check=AsyncConnectionPool.check_connection, max_idle=60,
+                               kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row,
+                                       "keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10})
     await pool.open()
     saver = AsyncPostgresSaver(pool)
     await saver.setup()

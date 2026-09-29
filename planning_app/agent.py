@@ -60,7 +60,8 @@ MODE_NOTES = {
     "build": "",
     "change": "# Now\nYour work was approved before. The PM now asks for a change (their last message). Make only the "
               "edits it needs, keep everything else as it is, then submit so the PM can approve the new version. If "
-              "the request is not about your part, use not_my_job.",
+              "the request is not about your part, use not_my_job. If the PM only asked a question, or in the end "
+              "wants nothing changed, answer them and then call no_impact.",
     "check": "# Now\nEarlier work you build on was changed (see the last note). Compare your approved draft with the "
              "updated approved work above. If something is affected, fix only that and submit. If nothing is "
              "affected, call no_impact and change nothing.",
@@ -102,7 +103,7 @@ def build_agent(name, llm):
     tools += [tool("submit", Submit), tool("not_my_job", NotMyJob)]
     if earlier(name):
         tools.append(tool("read_approved", ReadApproved))
-    with_tools = {"build": llm.bind_tools(tools), "change": llm.bind_tools(tools),
+    with_tools = {"build": llm.bind_tools(tools), "change": llm.bind_tools(tools + [tool("no_impact", NoImpact)]),
                   "check": llm.bind_tools(tools + [tool("no_impact", NoImpact)])}
     others = "\n".join(f"- {s.title}: {s.owns}" for s in STEPS.values() if s.name != name)
 
@@ -164,12 +165,14 @@ def build_agent(name, llm):
             return "Sent for review.", {"kind": "submit", "report": a.report, "summary": a.summary}
         if n == "not_my_job":
             return "Handed over.", {"kind": "handoff", "quote": NotMyJob.model_validate(args).quote}
-        if n == "no_impact" and state["mode"] == "check":
+        if n == "no_impact" and state["mode"] in ("change", "check"):
             NoImpact.model_validate(args)
             if draft != state["approved"].get(name):
                 raise ValueError("you already edited your draft, so it is affected: submit it for review instead")
             if bad := dangling(state, draft):
                 raise ValueError(f"your work points at keys that no longer exist: {', '.join(bad)}; fix and submit")
+            if problems := step.check(draft, state["approved"]):  # the new input can make a complete draft incomplete
+                raise ValueError("your work is affected: " + "; ".join(problems))
             return "Recorded: nothing to change.", {"kind": "no_impact"}
         raise ValueError(f"unknown tool {n}")
 

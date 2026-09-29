@@ -60,6 +60,38 @@ agent has the right data and the right numbers.
 - Apply to all check messages: review the current ones and cut any advice (e.g. "write the summary with
   save_summary", "fix and submit", "submit it for review instead").
 
+## 6. Findings from the live test run — NOT FIXED YET
+Found while testing the whole app as a user (gym booking idea, real DeepSeek and Supabase, test project
+"TEST RUN - Claude as user"). Most important first.
+
+1. **Main agent routes to the wrong part sometimes.** "Book 14 days, not 7" went to requirements, though the
+   approved project idea also said 7; the router rule says pick the earliest part. Earlier parts can quietly
+   disagree with later ones until the PM notices.
+2. **Invented assumptions.** After "go on your own" the requirements agent added assumptions the PM never agreed to
+   (A3, A5, A6; A6 was a real invention). It removed A6 when asked, but the rule "only a guess the PM agrees to" was
+   not followed.
+3. **Load balance counted across all sprints.** In sprint 2 Omar got 1 task and Ahmed and Sara 6 each, because
+   sprint 1 tasks were counted too. Balancing should be per running sprint.
+4. **Ignored "let's move on" once** and asked one more question.
+5. **Stale reasons in related items.** T15's reason still said "Ahmed already carries ... T9" after T9 moved to
+   Omar: the agent updates the item it changes, not related text elsewhere.
+6. **Task given to someone without the skill.** T25 is mobile work and nobody's role is mobile; flagged as a concern
+   but still assigned.
+7. **A partly done story counts its full points.** S4 was mostly done in sprint 1 but counted 3 points in sprint 2
+   (our current rule); sprint totals look bigger than the real work.
+8. **Every message after the plan is done counts as a "change"**, even a question. It no longer gets stuck (fixed),
+   but the sidebar briefly shows "Applying a change" for a simple question.
+9. **Slow turns.** Rewriting 45 criteria took several minutes; the app only shows "Working...", so a user may think
+   it froze.
+
+## 7. Long chats are never summarized — NOT FIXED YET
+Each step's own chat keeps growing, so every turn sends more text to the model: slower and more expensive over
+time.
+
+## 8. No smarter stop for repeated refused calls — NOT FIXED YET
+If an agent keeps making the same call that the code refuses, it only stops at the graph's step limit and the app
+shows "Something went wrong". There is no earlier, clearer stop.
+
 ## Other discussion: same inputs, same results (the doctor's question) — not planned
 - Same inputs word for word: temperature 0 helps but is not a guarantee; a response cache (same request -> saved
   reply) guarantees identical runs.
