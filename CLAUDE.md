@@ -7,6 +7,8 @@ under one routing main agent, built with LangGraph, DeepSeek, Supabase and Strea
 - `planning_app/LATER.md` lists ideas already discussed with the user but not built yet. Read it before changing
   the checks, the review screen or the sprint logic.
 - `planning_app/JIRA.md` holds the discussed (not approved) Jira integration design. Read it before any Jira work.
+- `planning_app/CREATE_AGENT.md` holds the proposal to switch the sub-agents to LangChain's `create_agent`. Read it
+  before changing how `agent.py` builds the agents.
 - Out of scope for now: tests, tooling (lint/CI/pre-commit), hosting, login.
 - Replies to the user: very simple, everyday words. End every change with a list of what changed.
 

@@ -31,10 +31,11 @@ class Summary(Item):
     slot = "summary"
     single = True
     title: str = Field(min_length=1, description="The project's short name")
-    summary: str = Field(min_length=1, description="The project explained to a colleague who missed the chat, "
-                         "shaped by what the PM cared about most. Headings only if they help, chosen from this "
-                         "project's own topics. Only what the PM stated")
-    assumptions: list[str] = Field(default=[], description="Only guesses the PM explicitly agreed to")
+    summary: str = Field(min_length=1, description="Only what the PM stated, under exactly these headings in this "
+                         "order (leave out a heading with nothing under it): Purpose, Problems it solves, Users and "
+                         "what each can do, Rules, Notifications, Out of scope, Other")
+    assumptions: list[str] = Field(default=[], description="Only guesses the PM explicitly said yes to; 'go on your "
+                                   "own' is not a yes. Usually empty")
 
 
 # --- requirements -------------------------------------------------------------------------------------------
@@ -43,8 +44,8 @@ class Prd(Item):
     slot = "prd"
     single = True
     title: str = Field(min_length=1)
-    body: str = Field(min_length=1, description="What the product is, goals, target users, in and out of scope. "
-                      "Headings chosen from this project's own topics")
+    body: str = Field(min_length=1, description="Exactly these headings in this order: What the product is, Goals, "
+                      "Target users, In scope, Out of scope")
 
 
 class Requirement(Item):
@@ -61,7 +62,7 @@ class Requirement(Item):
 
 
 class Assumption(Item):
-    """Record a guess the PM agreed to treat as one. Replaces the one with the same key."""
+    """Record a guess the PM explicitly said yes to. Replaces the one with the same key."""
     slot = "assumptions"
     key: str = Field(pattern=r"^A\d+$", description="A1, A2...")
     statement: str = Field(min_length=1)
@@ -77,7 +78,9 @@ class Story(Item):
     statement: str = Field(min_length=1, description="As a <role>, I want <goal>, so that <benefit>.")
     requirement_keys: list[str] = ref("requirements", "Requirements it implements (functional) or is constrained "
                                       "by (non-functional)", min_length=1)
-    points: float | None = Field(default=None, ge=0, description="Your proposed size in the PM's story-point scale")
+    points: float | None = Field(default=None, ge=0, description="Your proposed size in the PM's scale: 1 trivial, "
+                                 "2 one small rule, 3 one screen or backend action, 5 several parts or correctness "
+                                 "under many users, 8 too big (suggest a split)")
     priority: Priority
     priority_reason: str = Field(min_length=1)
 

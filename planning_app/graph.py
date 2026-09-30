@@ -9,6 +9,7 @@ Moves are conditional edges. The main agent (router) only decides which step own
 only checks that the move is allowed. After a change is approved, every later approved step checks itself, then
 the paused step continues. Everything the PM sees is one chat: `log` collects it across all agents.
 """
+import json
 import operator
 import os
 from typing import Annotated, Literal, TypedDict
@@ -126,10 +127,11 @@ def build(llm, db, checkpointer):
     async def router(s):
         h = s["handoff"]
         parts = "\n".join(f"- {name}: {STEPS[name].owns}" for name in ORDER)
-        done = "\n".join(f"- {name}: {v['summary']}" for name, v in s["approved"].items()) or "(nothing yet)"
+        done = "\n\n".join(f"## {name}\n{json.dumps(s['approved'][name]['draft'], ensure_ascii=False)}"
+                           for name in ORDER if name in s["approved"]) or "(nothing yet)"
         r = await router_llm.ainvoke([
             SystemMessage((PROMPTS / "router.md").read_text(encoding="utf-8") + f"\n\n# Parts\n{parts}\n\n"
-                          f"# Approved so far\n{done}"),
+                          f"# Approved content of each part, in order\n{done}"),
             HumanMessage(f"Handed over by: {h['from'] or 'nobody (every part is approved)'}\n"
                          f"PM's words: {h['quote']}")])
         return {"handoff": {**h, "target": r.target}}
@@ -189,7 +191,7 @@ def build(llm, db, checkpointer):
 async def open_graph():
     """Connect to DeepSeek and Supabase and build the graph. Its progress is saved in Supabase (schema langgraph)."""
     llm = ChatDeepSeek(model=os.environ.get("PLANNING_MODEL", "deepseek-chat"), api_key=os.environ["DEEPSEEK_API_KEY"],
-                       temperature=0.3, max_tokens=8192, timeout=180, max_retries=3)
+                       temperature=0, max_tokens=8192, timeout=180, max_retries=3)
     db = await acreate_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_ROLE_KEY"])
 
     async def use_langgraph_schema(conn):
