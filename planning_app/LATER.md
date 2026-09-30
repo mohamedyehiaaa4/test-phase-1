@@ -92,6 +92,21 @@ time.
 If an agent keeps making the same call that the code refuses, it only stops at the graph's step limit and the app
 shows "Something went wrong". There is no earlier, clearer stop.
 
+## 9. Where else ReAct agents would help — PROPOSED, NOT APPROVED YET
+All 6 sub-agents are already ReAct-style (reason -> call a tool -> observe -> repeat). ReAct is better only when
+the agent must go and find information it does not already have; when everything fits in the prompt, one call is
+faster, cheaper and more predictable. (Jira uses: see JIRA.md Part 2.)
+
+| Idea | Verdict | Why |
+|---|---|---|
+| 1. Router (main agent) | **Fix without ReAct first** | Wrong routing (finding 6.1) happens because it sees only short summaries. Give it the full approved texts in one call: it sees every place a fact appears ("7 days"), routing stays fast. Use ReAct with read-only search only if projects get too big for the prompt. |
+| 2. Q&A agent for questions | **Do (clearly better)** | Questions need looking things up ("which stories are left?", "who has T9?"). The main agent sends questions to a read-only ReAct agent that searches all approved parts and answers: no change, no save, no mode switch. Also fixes finding 6.8 (a question opens a "change"). |
+| 3. Consistency checker | **Optional, on demand** | A read-only agent that finds contradictions between parts (e.g. idea says 7 days, requirements 14) and reports them; fixes go through the normal change flow. Costs extra calls, so run it when the PM asks or once before pushing to Jira, not after every change. |
+| 4. Real velocity and workload | **Later, with Jira** | Sprint agent reads real velocity from past sprints to suggest capacity; assignments agent reads each person's current load in Jira. Only useful once there is real sprint history. |
+
+Keep as code (never ReAct): saving to the database, pushing to Jira, the guard, adding up points, showing the draft
+for review. Rule: agents decide and investigate, code does the exact work.
+
 ## Other discussion: same inputs, same results (the doctor's question) — not planned
 - Same inputs word for word: temperature 0 helps but is not a guarantee; a response cache (same request -> saved
   reply) guarantees identical runs.

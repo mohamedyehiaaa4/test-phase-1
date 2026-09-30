@@ -1,4 +1,4 @@
--- Planning App schema (Supabase Postgres). Run once; it removes the old system first.
+-- Planning App schema (Supabase Postgres). Run once on an empty database.
 --
 -- Model: every PM approval of a step is one row in step_versions. The step's items live in their own tables and
 -- belong to that version. A change makes a new version; old versions stay as history. Links between steps point
@@ -7,31 +7,10 @@
 -- The app talks to it with two functions that use the same JSON shape as the agents' drafts:
 --   save_step(project, step, approved_by, summary, report, draft) -> new version number (one transaction)
 --   load_step(project, step) -> draft JSON of the current version, or null
+--   load_project(project) -> every current step at once: {step: {version, summary, report, draft}}
 
 -- ============================================================================================================
--- 1. Remove the old system
--- ============================================================================================================
-drop trigger if exists on_auth_user_created on auth.users;
-drop view if exists public.phase1_gate_status cascade;
-drop table if exists
-  public.agent_runs, public.workflow, public.quality_checks, public.approvals, public.artifact_history,
-  public.artifact_key_counters, public.artifact_relationships, public.artifacts,
-  public.project_members, public.projects, public.users
-  cascade;
-drop function if exists
-  public.add_project_creator_as_pm, public.apply_approval, public.archive_artifacts, public.artifacts_after_write,
-  public.artifacts_before_insert, public.artifacts_before_update, public.artifacts_prevent_delete,
-  public.can_read_artifact, public.confirm_unchanged_artifacts, public.handle_new_user, public.is_project_member,
-  public.mark_dependents_needs_review, public.save_approved_session_bundle, public.set_updated_at,
-  public.shares_project_with, public.update_artifact_content, public.validate_relationship
-  cascade;
-drop type if exists
-  public.approval_decision, public.artifact_status, public.artifact_type, public.project_role,
-  public.project_status, public.relationship_type
-  cascade;
-
--- ============================================================================================================
--- 2. Tables
+-- 1. Tables
 -- ============================================================================================================
 create schema if not exists langgraph;  -- LangGraph checkpoints (graph progress); not exposed to the Data API
 
@@ -232,7 +211,7 @@ from public.step_versions
 order by project_id, step, version desc;
 
 -- ============================================================================================================
--- 3. Save and load
+-- 2. Save and load
 -- ============================================================================================================
 create or replace function public.current_version_id(p_project uuid, p_step text)
 returns bigint language sql stable set search_path = '' as $$
@@ -447,8 +426,17 @@ begin
   raise exception 'unknown step %', p_step;
 end $$;
 
+-- Every current step of a project in one call (instead of one load_step call per step).
+create or replace function public.load_project(p_project uuid)
+returns jsonb language sql stable set search_path = '' as $$
+  select coalesce(jsonb_object_agg(step, jsonb_build_object(
+           'version', version, 'summary', summary, 'report', report,
+           'draft', public.load_step(p_project, step))), '{}')
+  from public.current_steps where project_id = p_project
+$$;
+
 -- ============================================================================================================
--- 4. Access: only the server (service_role key / direct connection) may touch any of this
+-- 3. Access: only the server (service_role key / direct connection) may touch any of this
 -- ============================================================================================================
 do $$
 declare t text;
@@ -462,11 +450,13 @@ begin
 end $$;
 revoke all on public.current_steps from anon, authenticated;
 revoke all on schema langgraph from anon, authenticated;
-revoke execute on function public.current_version_id, public.save_step, public.load_step from public, anon, authenticated;
-grant execute on function public.current_version_id, public.save_step, public.load_step to service_role;
+revoke execute on function public.current_version_id, public.save_step, public.load_step, public.load_project
+  from public, anon, authenticated;
+grant execute on function public.current_version_id, public.save_step, public.load_step, public.load_project
+  to service_role;
 
 -- ============================================================================================================
--- 5. Your project and its PM (use the PROJECT_ID and PM_USER_ID from .env)
+-- 4. Your project and its PM (use the PROJECT_ID and PM_USER_ID from .env)
 -- ============================================================================================================
 -- insert into public.users (id, name) values ('<PM_USER_ID>', 'Mohamed Yehia');
 -- insert into public.projects (id, name, pm_id) values ('<PROJECT_ID>', 'RepoMind Phase 1', '<PM_USER_ID>');

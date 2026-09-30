@@ -9,7 +9,6 @@ Moves are conditional edges. The main agent (router) only decides which step own
 only checks that the move is allowed. After a change is approved, every later approved step checks itself, then
 the paused step continues. Everything the PM sees is one chat: `log` collects it across all agents.
 """
-import json
 import operator
 import os
 from typing import Annotated, Literal, TypedDict
@@ -56,17 +55,6 @@ def note(text):
     return HumanMessage(text, name="note")
 
 
-def context_for(step, approved):
-    before = [s for s in ORDER[:ORDER.index(step)] if s in approved]
-    if not before:
-        return ""
-    lines = ["# Approved earlier work (short summaries; read_approved gives the full text)"]
-    lines += [f"- {STEPS[s].title}: {approved[s]['summary']}" for s in before]
-    last = before[-1]
-    lines += [f"\n# Approved {STEPS[last].title} (full, the input you build on)", json.dumps(approved[last]["draft"], ensure_ascii=False)]
-    return "\n".join(lines)
-
-
 # ---- graph ------------------------------------------------------------------------------------------------------
 
 
@@ -75,12 +63,7 @@ def build(llm, db, checkpointer):
     router_llm = llm.with_structured_output(Route, method="function_calling")
 
     async def load(s):
-        rows = (await db.table("current_steps").select("step, version, summary, report")
-                .eq("project_id", s["project_id"]).execute()).data
-        approved = {}
-        for r in rows:
-            draft = (await db.rpc("load_step", {"p_project": s["project_id"], "p_step": r["step"]}).execute()).data
-            approved[r["step"]] = {**r, "draft": draft}
+        approved = (await db.rpc("load_project", {"p_project": s["project_id"]}).execute()).data or {}
         base = {"approved": approved, "outcome": None, "handoff": None}
         change = s.get("change")
         if change and change["to_check"]:
@@ -98,8 +81,9 @@ def build(llm, db, checkpointer):
     def step_node(name):
         async def run(s):
             own = s["approved"].get(name)
-            inp = {"mode": s["mode"], "outcome": None, "context": context_for(name, s["approved"]),
-                   "approved": {k: v["draft"] for k, v in s["approved"].items()}}
+            inp = {"mode": s["mode"], "outcome": None,
+                   "approved": {k: v["draft"] for k, v in s["approved"].items()},
+                   "summaries": {k: v["summary"] for k, v in s["approved"].items()}}
             if s["mode"] != "build" and own:
                 inp["draft"] = own["draft"]  # changes start from exactly what is approved
             if s.get("note"):
@@ -157,7 +141,7 @@ def build(llm, db, checkpointer):
         if change and s.get("mode") == "change" and src == change["origin"]:  # the change was misrouted: send it on
             change, back_to = None, change["back_to"]
 
-        def refuse(for_agent, for_pm):
+        def refuse(for_agent, for_pm=""):
             if src:
                 return {"handoff": None, "step": src, "note": note(f'The PM wrote: "{quote}". {for_agent}')}
             return {"handoff": None, "step": None, "notice": for_pm}
@@ -166,7 +150,7 @@ def build(llm, db, checkpointer):
             return refuse("It is not clear which part of the plan this is about: ask the PM one short question.",
                           "I could not tell which part of the plan that is about. Which part should change?")
         if target == src:
-            return refuse("This is for your part after all: handle it.", "")
+            return refuse("This is for your part after all: handle it.")  # target == src implies src is an agent
         if target not in approved:
             return refuse(f"That belongs to {STEPS[target].title}, which is not written yet, so it cannot be changed "
                           "now. Tell the PM plainly.", f"{STEPS[target].title} is not written yet.")

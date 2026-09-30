@@ -25,8 +25,8 @@ class AgentState(TypedDict, total=False):
     messages: Annotated[list, add_messages]  # this agent's own conversation
     draft: dict                                # this agent's own draft (reset to the approved one for a change)
     mode: str                                  # build | change | check
-    context: str                               # approved earlier work, written by the main graph
-    approved: dict                             # approved drafts by step, for the checks
+    approved: dict                             # approved drafts by step (input from the main graph)
+    summaries: dict                            # short summary of each approved step (input from the main graph)
     outcome: dict | None
 
 
@@ -80,6 +80,19 @@ def chat_of(messages):
             for m in messages
             if (isinstance(m, AIMessage) and not m.tool_calls and m.content)
             or (isinstance(m, HumanMessage) and not m.name)]
+
+
+def context_for(step, approved, summaries):
+    """Earlier approved work the agent builds on: short summaries of all of it, and the step right before in full."""
+    before = [s for s in earlier(step) if s in approved]
+    if not before:
+        return ""
+    lines = ["# Approved earlier work (short summaries; read_approved gives the full text)"]
+    lines += [f"- {STEPS[s].title}: {summaries.get(s, '')}" for s in before]
+    last = before[-1]
+    lines += [f"\n# Approved {STEPS[last].title} (full, the input you build on)",
+              json.dumps(approved[last], ensure_ascii=False)]
+    return "\n".join(lines)
 
 
 def answer_broken(messages):
@@ -178,7 +191,8 @@ def build_agent(name, llm):
 
     async def model(state):
         system = "\n\n".join(filter(None, [
-            step.prompt, f"# Other parts of the plan (not yours)\n{others}", state.get("context", ""),
+            step.prompt, f"# Other parts of the plan (not yours)\n{others}",
+            context_for(name, state["approved"], state.get("summaries") or {}),
             MODE_NOTES[state["mode"]],
             "# Your current draft\n" + json.dumps(state.get("draft") or {}, ensure_ascii=False, indent=1)]))
         reply = await with_tools[state["mode"]].ainvoke([SystemMessage(system), *answer_broken(state["messages"])])
