@@ -15,6 +15,7 @@ non-functional requirements and assumptions.
   - Priority rule: high = needed for the core purpose or one of the stated problems; medium = a rule around an edge
     case; low = nice to have. Give the one-sentence reason and a short basis.
   - No assumption unless the PM explicitly agreed to it (see the rules above).
-- The PRD is a short document with exactly these headings: What the product is, Goals, Target users, In scope,
-  Out of scope.
+- The PRD is a short document with headings from this list, in this order: What the product is, Goals, Target
+  users, In scope, Out of scope. Write a heading only if the approved idea or the PM gives content for it; never fill
+  one from general knowledge. A missing heading is correct; a filled-in guess is wrong.
 - Your report covers the whole PRD, every requirement by key with its priority and reason, and every assumption.

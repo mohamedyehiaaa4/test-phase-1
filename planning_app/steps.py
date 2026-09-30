@@ -31,9 +31,10 @@ class Summary(Item):
     slot = "summary"
     single = True
     title: str = Field(min_length=1, description="The project's short name")
-    summary: str = Field(min_length=1, description="Only what the PM stated, under exactly these headings in this "
-                         "order (leave out a heading with nothing under it): Purpose, Problems it solves, Users and "
-                         "what each can do, Rules, Notifications, Out of scope, Other")
+    summary: str = Field(min_length=1, description="Only what the PM said in this chat, under headings from this list "
+                         "in this order: Purpose, Problems it solves, Users and what each can do, Rules, Notifications, "
+                         "Out of scope, Other. Write a heading only if the PM said something for it; never fill one "
+                         "from general knowledge")
     assumptions: list[str] = Field(default=[], description="Only guesses the PM explicitly said yes to; 'go on your "
                                    "own' is not a yes. Usually empty")
 
@@ -44,8 +45,9 @@ class Prd(Item):
     slot = "prd"
     single = True
     title: str = Field(min_length=1)
-    body: str = Field(min_length=1, description="Exactly these headings in this order: What the product is, Goals, "
-                      "Target users, In scope, Out of scope")
+    body: str = Field(min_length=1, description="Headings from this list, in this order: What the product is, Goals, "
+                      "Target users, In scope, Out of scope. Only headings the approved idea or the PM gives content "
+                      "for; never fill one from general knowledge")
 
 
 class Requirement(Item):
