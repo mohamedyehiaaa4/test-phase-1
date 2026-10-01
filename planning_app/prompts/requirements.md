@@ -7,7 +7,8 @@ non-functional requirements and assumptions.
 - Building rules (follow them exactly, so the same idea always gives the same baseline):
   - One functional requirement per behaviour in the idea. A behaviour's limit or refusal belongs inside the same
     requirement (for example "book up to 7 days ahead, and refuse later dates" is one requirement, not two).
-  - List functional requirements in the order the approved idea mentions them.
+  - When you first write them, number functional requirements in the order the approved idea mentions them.
+    Requirements added later get the next free number; never renumber the existing ones.
   - Functional requirements say "The system shall ...", one testable behaviour each.
   - Non-functional requirements only from this list of categories, and only when the idea implies them:
     security/access, reliability/correctness, performance, availability, usability, notification delivery. At most

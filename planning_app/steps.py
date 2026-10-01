@@ -4,7 +4,7 @@ A draft is plain JSON: {slot: item} for a single item, {slot: [items]} for a lis
 save_step / load_step use in the database. A field marked ref("stories") must hold keys of items in that slot,
 either in this draft or in an approved earlier step.
 """
-import re
+import difflib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, ClassVar, Literal
@@ -131,7 +131,9 @@ class Sprint(Item):
     status: Literal["planned", "active", "closed"] = Field(description="Only one sprint is active")
     task_keys: list[str] = ref("tasks", "Tasks in this sprint")
     length: str = Field(default="", description="As the PM said it")
-    capacity: str = Field(default="", description="As the PM said it")
+    capacity: float | None = Field(default=None, ge=0, description="Team capacity in story points, as a number "
+                                   "(\"about 20\" is 20); empty if the PM does not know. Anything else they say about "
+                                   "it goes in notes")
     notes: str = ""
     outcome: str = Field(default="", description="For a closed sprint: what was done and not, in the PM's words")
 
@@ -152,7 +154,8 @@ class Assignment(Item):
     task_key: str = ref("tasks", "A task of the active sprint")
     member_keys: list[str] = ref("members", "Main owner first, then helpers. Empty = unassigned", default=[])
     required_role: str = Field(default="", description="The kind of role the task needs")
-    rationale: str = Field(default="", description="One short sentence: why (or why nobody fits)")
+    rationale: str = Field(default="", description="One short sentence about this task only: why this person's role "
+                           "fits it (or why nobody fits). Never counts or lists of other tasks")
 
 
 # --- done checks: (draft, approved drafts of earlier steps) -> problems -------------------------------------
@@ -175,12 +178,9 @@ def check_stories(d, approved):
 
 
 def check_criteria(d, approved):
-    types = {}
-    for c in d.get("criteria", []):
-        types.setdefault(c["story_key"], set()).add(c["type"])
-    weak = [s["key"] for s in approved["stories"]["stories"]
-            if "happy_path" not in types.get(s["key"], ()) or len(types.get(s["key"], ())) < 2]
-    return [f"each story needs a happy path and a negative or edge case: {', '.join(weak)}"] if weak else []
+    covered = {c["story_key"] for c in d.get("criteria", [])}
+    missing = [s["key"] for s in approved["stories"]["stories"] if s["key"] not in covered]
+    return [f"no criteria for {', '.join(missing)}"] if missing else []
 
 
 def check_sprint(d, _):
@@ -200,6 +200,76 @@ def check_assignments(d, approved):
     return [f"no decision yet for {', '.join(left)}"] if left else []
 
 
+def sprint_numbers(d, approved):
+    """Facts about every sprint in the draft, computed by code so the agent never adds points itself."""
+    points = {s["key"]: s.get("points") for s in (approved.get("stories") or {}).get("stories", [])}
+    story_of = {t["key"]: t["story_key"] for t in d.get("tasks", [])}
+    shown = lambda k: f"{k} ({points[k]:g})" if points.get(k) is not None else f"{k} (no points)"  # noqa: E731
+    lines, planned = [], set()
+    for sp in sorted(d.get("sprints", []), key=lambda s: s["number"]):
+        stories = sorted({story_of[t] for t in sp["task_keys"] if t in story_of}, key=lambda k: int(k[1:]))
+        planned.update(stories)
+        total, cap = sum(points.get(k) or 0 for k in stories), sp.get("capacity")
+        line = f"{sp['key']} ({sp['status']}): {', '.join(map(shown, stories)) or 'no stories'} = {total:g} points"
+        line += f" of capacity {cap:g}" if cap is not None else ", capacity unknown"
+        if cap is not None and total > cap:
+            line += f"; OVER CAPACITY by {total - cap:g}"
+        if no_points := [k for k in stories if points.get(k) is None]:
+            line += f"; no points: {', '.join(no_points)}"
+        if partly := [k for k in stories if any(s == k and t not in sp["task_keys"] for t, s in story_of.items())]:
+            line += f"; only partly in this sprint: {', '.join(partly)}"
+        lines.append(line)
+    backlog = [k for k in points if k not in planned]
+    lines.append(f"Backlog (in no sprint): {', '.join(map(shown, backlog)) or 'none'} = "
+                 f"{sum(points.get(k) or 0 for k in backlog):g} points")
+    return "\n".join(lines)
+
+
+def team_load(d, approved):
+    """Each member's tasks in the running sprint, computed by code so reasons never carry counts that go stale."""
+    sprint_tasks = active_sprint_tasks(approved["sprint"]) if approved.get("sprint") else []
+    decided = {a["task_key"]: a["member_keys"] for a in d.get("assignments", []) if a["task_key"] in sprint_tasks}
+    lines = []
+    for m in d.get("members", []):
+        owns = [t for t in sprint_tasks if (decided.get(t) or [None])[0] == m["key"]]  # [] = left unassigned
+        helps = [t for t in sprint_tasks if m["key"] in (decided.get(t) or [])[1:]]
+        lines.append(f"{m['key']} {m['name']}: {len(owns)} task(s) as main owner ({', '.join(owns) or 'none'})"
+                     + (f", helping on {', '.join(helps)}" if helps else ""))
+    lines.append(f"Not decided yet: {', '.join(t for t in sprint_tasks if t not in decided) or 'none'}")
+    lines.append(f"Left unassigned: {', '.join(t for t in sprint_tasks if decided.get(t) == []) or 'none'}")
+    return "\n".join(lines)
+
+
+def what_changed(step, old, new, cap=30):
+    """What differs between two versions of a step's draft, as short facts for the parts that check themselves."""
+    old, new, lines = old or {}, new or {}, []
+
+    def label(x):
+        return next((str(x[f]) for f in ("title", "name", "scenario", "goal", "statement") if x.get(f)), "")
+
+    for m in STEPS[step].items:
+        a, b = old.get(m.slot), new.get(m.slot)
+        if m.single:
+            a, b = a or {}, b or {}
+            for f in m.model_fields:
+                x, y = a.get(f), b.get(f)
+                if x == y:
+                    continue
+                if isinstance(x, str) and isinstance(y, str):  # text: line by line
+                    lines += [f"{'removed' if d[0] == '-' else 'added'} line in {f}: {d[2:].strip()}"
+                              for d in difflib.ndiff(x.splitlines(), y.splitlines())
+                              if d[:2] in ("- ", "+ ") and d[2:].strip()]
+                else:
+                    lines.append(f"{f} changed: {x!r} -> {y!r}")
+        else:  # list items: by key
+            ka, kb = {x[m.key_field]: x for x in a or []}, {x[m.key_field]: x for x in b or []}
+            lines += [f"added {k}: {label(kb[k])}" for k in kb if k not in ka]
+            lines += [f"removed {k}: {label(ka[k])}" for k in ka if k not in kb]
+            lines += [f"changed {k} ({label(kb[k])}): {', '.join(f for f in kb[k] if ka[k].get(f) != kb[k].get(f))}"
+                      for k in kb if k in ka and ka[k] != kb[k]]
+    return lines[:cap] + ([f"...and {len(lines) - cap} more"] if len(lines) > cap else [])
+
+
 @dataclass(frozen=True)
 class Step:
     name: str
@@ -207,6 +277,8 @@ class Step:
     items: tuple[type[Item], ...]
     check: Callable[[dict, dict], list[str]]
     owns: str  # what this step owns, for the main agent's routing
+    builds_on: tuple[str, ...] = ()  # earlier steps shown to the agent in full
+    numbers: Callable[[dict, dict], str] | None = None  # facts computed by code, shown under the agent's draft
 
     @property
     def prompt(self):
@@ -218,16 +290,19 @@ STEPS = {s.name: s for s in (
     Step("discovery", "Project idea", (Summary,), check_discovery,
          "the project idea: what it is, who it is for, goals, needs, the agreed assumptions about the idea"),
     Step("requirements", "Requirements", (Prd, Requirement, Assumption), check_requirements,
-         "the PRD, functional and non-functional requirements, their priorities, requirement assumptions"),
+         "the PRD, functional and non-functional requirements, their priorities, requirement assumptions",
+         builds_on=("discovery",)),
     Step("stories", "User stories", (Story,), check_stories,
-         "user stories, their story points and priorities, which requirements each story covers"),
+         "user stories, their story points and priorities, which requirements each story covers",
+         builds_on=("requirements",)),
     Step("criteria", "Acceptance criteria", (Criterion,), check_criteria,
-         "acceptance criteria (Given/When/Then) of the stories"),
+         "acceptance criteria (Given/When/Then) of the stories", builds_on=("stories",)),
     Step("sprint", "Sprint plan", (Epic, Task, Sprint), check_sprint,
          "epics, tasks, sprint length and capacity, which stories/tasks are in a sprint, closing a sprint and "
-         "planning the next one"),
+         "planning the next one", builds_on=("stories", "criteria"), numbers=sprint_numbers),
     Step("assignments", "Task assignments", (Member, Assignment), check_assignments,
-         "the team members and their roles, who works on each task of the active sprint"),
+         "the team members and their roles, who works on each task of the active sprint",
+         builds_on=("sprint", "stories"), numbers=team_load),
 )}
 ORDER = list(STEPS)
 
@@ -255,7 +330,3 @@ def bad_refs(item, known):
             value = getattr(item, name)
             bad += [k for k in (value if isinstance(value, list) else [value]) if k not in known.get(slot, ())]
     return bad
-
-
-def missing_from(report, keys):
-    return [k for k in keys if not re.search(rf"\b{re.escape(k)}\b", report)]

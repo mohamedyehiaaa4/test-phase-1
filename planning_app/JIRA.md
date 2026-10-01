@@ -156,7 +156,7 @@ Flow:
    - Tasks moved or removed in Jira: notices and asks.
    - Comments and blockers on unfinished tasks, to decide what to carry over.
 4. **Closes sprint N** with the real outcome, then **plans sprint N+1**: unfinished work first, then the most
-   important backlog stories, using code-computed point totals (see LATER.md point 3).
+   important backlog stories, using code-computed point totals (built, see CHANGES.md "Former LATER point 3").
 5. **The PM approves** -> assignments checks itself -> **[Push to Jira]** creates the next sprint.
 
 Why ReAct fits here (and not for pushing): pushing is a fixed mapping with nothing to decide; closing a sprint is

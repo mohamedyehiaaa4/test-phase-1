@@ -1,113 +1,63 @@
 # Ideas for later (discussed, not built yet)
 
-Review of the code checks: which ones code should do, and which ones belong to the agent or the PM.
+Ordered by importance: the first one matters most. Everything already built or decided is in `CHANGES.md`.
 
-## 1. Criteria check: coverage only — DECIDED (option 2), not built
-- Today `check_criteria` (steps.py) forces every story to have a happy path AND a negative/edge case.
-- That is a quality judgment, and it pushes the agent to invent weak scenarios to pass.
-- Change: code only checks that every approved story has at least one criterion. The prompt says: a happy path,
-  plus negative or edge cases where they make sense; never invent one just to have it.
+## 1. Stories miss the groundwork, so the plan cannot really be built — HIGH, not approved
+- Found in the PM's run (advising agent for students): S1-S7 cover only what users see, and no story or task builds
+  the agent itself (model, main instructions, web search tool). True for any project: the stories step writes exactly
+  one story per functional requirement, so shared groundwork (an agent, a database, a payment connection, login,
+  server setup) gets no story, the sprint never schedules it and nobody is assigned to it.
+- Related: AI work is labeled "backend" (T3 "Work out the missing skills", T7 "Build the roadmap") even though the
+  sprint rule lists AI/ML as a kind of work, so it can go to the wrong person.
+- Proposal (groundwork stories, also called technical or enabler stories; prompts only, no code or database change):
+  - `prompts/stories.md`: after the one-story-per-requirement list, add a story for each shared piece that two or
+    more stories need and no story builds, written from the team's side ("S8: As the development team, we need the
+    advising agent set up (model, main instructions, web search tool), so that S2 to S7 can work"). It links to the
+    requirements it serves, gets points and a priority like any story, and the report names it so the PM can remove
+    or change it. Only for groundwork the requirements clearly need; never new features (the "never invent" rule stays).
+  - `prompts/sprint.md`: a groundwork story counts as a dependency of the stories it serves, so the existing
+    dependencies-first rule puts it in the first sprint. Also: work done by an AI model is AI work, not backend.
+  - Criteria and assignments need no change: groundwork stories use normal S keys and get criteria and owners.
+- Fits point 3 (no NFR-only story): a groundwork story still links to functional requirements.
 
-```python
-def check_criteria(d, approved):
-    covered = {c["story_key"] for c in d.get("criteria", [])}
-    missing = [s["key"] for s in approved["stories"]["stories"] if s["key"] not in covered]
-    return [f"no criteria for {', '.join(missing)}"] if missing else []
-```
+## 2. Slow turns look frozen — MEDIUM
+Rewriting 45 criteria took several minutes; the app only shows "Working...", so a user may think it froze. Long turns
+are the agent's bulk work in one go (dozens of save calls). Dropping old tool traffic (CHANGES.md) made later turns
+smaller but not the first long one. Ideas: show progress (stream the agent's steps, e.g. "saved C12 of 45"), or a
+clearer waiting message.
 
-## 2. Review shows the real draft, not a written report — PROPOSED (option 2), maybe later
-- Today the agent writes a full report and code only checks that every key appears in it (`missing_from`).
-  That does not prove the report is true, is easy to trick, and long reports caused the cut-off bug.
-- Idea: code renders the draft itself for review (tables/lists, one small generic renderer for all item types);
-  the agent writes only a short message on top. Remove the key search from submit.
-- Trade-off: less natural prose; layout fixed by code instead of formats the PM asks for.
-- Other options discussed: keep as is; a second LLM checks the report against the draft (extra cost per submit).
-
-## 3. Sprint arithmetic in code — DECIDED, not built
-The agent still decides what goes in the sprint (stories, tasks, goal); the PM approves. Code only makes sure the
-agent has the right data and the right numbers.
-
-- **A. The sprint agent always sees the stories with their points.** Today it sees only criteria in full (the step
-  right before) and must remember to call `read_approved` for stories. Fix: each step declares which earlier steps it
-  builds on (`builds_on` in steps.py), and `context_for` (graph.py) shows all of them in full: sprint = stories +
-  criteria; assignments = sprint + stories; others unchanged.
-- **B. Capacity as a number.** New `capacity_points` field on `Sprint` (number, or empty if the PM does not know);
-  `notes` keeps anything else. schema.sql: `sprints.capacity` text -> `capacity_points` numeric, and update
-  `save_step` / `load_step`.
-- **C. Code computes the sprint numbers every turn** — a helper (not a tool: numbers must always be right and must
-  not depend on the agent remembering to call something). Per sprint: stories in it (from its tasks), total points
-  vs capacity, stories with no points, stories only partly in the sprint (counted with full points, marked
-  "partly"), and a clear warning when over capacity (never blocks). Shown automatically under the draft each turn
-  and in the review. ~10 lines in steps.py + one line in the agent's `model` node for the sprint step.
-- **D. Sprint prompt.** Remove "do the arithmetic yourself". Add: "Use the computed sprint numbers shown to you;
-  never add points yourself. If the sprint is over capacity or a story has no points, say so plainly."
-
-## 4. No story built only from non-functional requirements — DISCUSSED, NOT APPROVED YET
-- It slipped through once (S15 built only on NFR4); the prompt rule alone did not hold.
+## 3. No story built only from non-functional requirements — MEDIUM-LOW, not approved
+- It slipped through once (S15 built only on NFR4) before the stricter stories prompt; since that prompt ("exactly one
+  story per functional requirement") no NFR-only story appeared in the test runs, but nothing in code guarantees it.
 - A story is something a user does (from a functional requirement); a non-functional requirement is a constraint on
-  how things work. So this is a rule about how data is linked, which fits code.
-- Proposal: `check_stories` refuses submit when a story links to no functional requirement (~2 lines).
-- Related proposal: every non-functional requirement must be attached to at least one story, so criteria can test
-  it (~1 line). Global NFRs get attached to many stories.
-- Options discussed: prompt only (already failed once); block at submit (proposed); warn only (weaker, no good
-  exceptions to this rule).
+  how things work, so this is a rule about how data is linked, which fits code.
+- Proposals: `check_stories` refuses submit when a story links to no functional requirement ("S15 links to no
+  functional requirement"); and every non-functional requirement must be attached to at least one story ("NFR3 is
+  attached to no story"). About 4 lines; facts about links, not text.
+- Options: A both checks (recommended); B only the first; C prompt only.
 
-## 5. Check messages state facts only, never advice — DISCUSSED, NOT APPROVED YET
-- A check must say what failed, or the agent cannot fix it; a fixed message stating a fact about the data is fine.
-- But a message must not tell the agent what to do (that is a decision for the agent; the prompt explains the rules).
-- Example: "Not done: S15 links only to non-functional requirements (NFR4)." — not "...Attach NFR4 to the stories
-  it constrains, or ask the PM to...".
-- Apply to all check messages: review the current ones and cut any advice (e.g. "write the summary with
-  save_summary", "fix and submit", "submit it for review instead").
+## 4. A partly done story counts its full points — MEDIUM-LOW
+A story carried over with only some of its tasks unfinished counts its full points again in the next sprint (S4 in the
+first test; S4 and S10 in the full test). `sprint_numbers` now marks it "only partly in this sprint" but still counts
+full points, so sprint totals look bigger than the remaining work.
 
-## 6. Findings from the live test run — NOT FIXED YET
-Found while testing the whole app as a user (gym booking idea, real DeepSeek and Supabase, test project
-"TEST RUN - Claude as user"). Most important first.
+## 5. Consistency checker — LOW, optional, on demand
+A read-only agent that finds contradictions between parts (e.g. the idea says 7 days, the requirements 14) and reports
+them; fixes go through the normal change flow. Costs extra calls, so run it when the PM asks or once before pushing to
+Jira, not after every change. The change comparison (CHANGES.md, full test problem 2) already removes the main source of contradictions.
 
-1. **Main agent routes to the wrong part sometimes.** "Book 14 days, not 7" went to requirements, though the
-   approved project idea also said 7; the router rule says pick the earliest part. Earlier parts can quietly
-   disagree with later ones until the PM notices.
-2. **Invented assumptions.** After "go on your own" the requirements agent added assumptions the PM never agreed to
-   (A3, A5, A6; A6 was a real invention). It removed A6 when asked, but the rule "only a guess the PM agrees to" was
-   not followed.
-3. **Load balance counted across all sprints.** In sprint 2 Omar got 1 task and Ahmed and Sara 6 each, because
-   sprint 1 tasks were counted too. Balancing should be per running sprint.
-4. **Ignored "let's move on" once** and asked one more question.
-5. **Stale reasons in related items.** T15's reason still said "Ahmed already carries ... T9" after T9 moved to
-   Omar: the agent updates the item it changes, not related text elsewhere.
-6. **Task given to someone without the skill.** T25 is mobile work and nobody's role is mobile; flagged as a concern
-   but still assigned.
-7. **A partly done story counts its full points.** S4 was mostly done in sprint 1 but counted 3 points in sprint 2
-   (our current rule); sprint totals look bigger than the real work.
-8. **Every message after the plan is done counts as a "change"**, even a question. It no longer gets stuck (fixed),
-   but the sidebar briefly shows "Applying a change" for a simple question.
-9. **Slow turns.** Rewriting 45 criteria took several minutes; the app only shows "Working...", so a user may think
-   it froze.
+## 6. Start from existing work (skip steps) — future product feature
+Today the forward order is fixed by code (idea -> requirements -> stories -> criteria -> sprint -> assignments): the
+right default (each step needs the one before it, runs stay consistent, no step skipped by mistake). Moving back is
+already flexible: the main agent routes change requests to any approved part.
+- Idea: a PM who already has the work ("I already have a requirements document, import it") skips the earlier steps.
+- How: the main agent (LLM, exists) recognises the request; the owning agent (already able) reads the pasted document
+  and builds its items with its existing tools; the PM reviews and approves as usual. Two small code changes: the guard
+  must allow a later part when the PM brings existing work for it (today: "not written yet"), and `load` must accept
+  that an earlier step was skipped on purpose (today it always starts at the first unapproved step).
+- Works partly today: pasting the document at the start makes discovery use it as the PM's input; steps go faster.
+- Rejected alternatives: an LLM supervisor choosing the next step every time; running steps in parallel.
 
-## 7. Long chats are never summarized — NOT FIXED YET
-Each step's own chat keeps growing, so every turn sends more text to the model: slower and more expensive over
-time.
-
-## 8. No smarter stop for repeated refused calls — NOT FIXED YET
-If an agent keeps making the same call that the code refuses, it only stops at the graph's step limit and the app
-shows "Something went wrong". There is no earlier, clearer stop.
-
-## 9. Where else ReAct agents would help — PROPOSED, NOT APPROVED YET
-All 6 sub-agents are already ReAct-style (reason -> call a tool -> observe -> repeat). ReAct is better only when
-the agent must go and find information it does not already have; when everything fits in the prompt, one call is
-faster, cheaper and more predictable. (Jira uses: see JIRA.md Part 2.)
-
-| Idea | Verdict | Why |
-|---|---|---|
-| 1. Router (main agent) | **Fix without ReAct first** | Wrong routing (finding 6.1) happens because it sees only short summaries. Give it the full approved texts in one call: it sees every place a fact appears ("7 days"), routing stays fast. Use ReAct with read-only search only if projects get too big for the prompt. |
-| 2. Q&A agent for questions | **Do (clearly better)** | Questions need looking things up ("which stories are left?", "who has T9?"). The main agent sends questions to a read-only ReAct agent that searches all approved parts and answers: no change, no save, no mode switch. Also fixes finding 6.8 (a question opens a "change"). |
-| 3. Consistency checker | **Optional, on demand** | A read-only agent that finds contradictions between parts (e.g. idea says 7 days, requirements 14) and reports them; fixes go through the normal change flow. Costs extra calls, so run it when the PM asks or once before pushing to Jira, not after every change. |
-| 4. Real velocity and workload | **Later, with Jira** | Sprint agent reads real velocity from past sprints to suggest capacity; assignments agent reads each person's current load in Jira. Only useful once there is real sprint history. |
-
-Keep as code (never ReAct): saving to the database, pushing to Jira, the guard, adding up points, showing the draft
-for review. Rule: agents decide and investigate, code does the exact work.
-
-## Other discussion: same inputs, same results (the doctor's question) — not planned
-- Same inputs word for word: temperature 0 helps but is not a guarantee; a response cache (same request -> saved
-  reply) guarantees identical runs.
-- Same idea in different words: needs structured facts from discovery, fixed rules per agent, topic plans.
+## 7. Real velocity and workload — later, with Jira
+The sprint agent reads real velocity from past sprints to suggest a capacity; the assignments agent reads each
+person's current load in Jira. Only useful once there is real sprint history (see JIRA.md).

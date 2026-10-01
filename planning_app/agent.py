@@ -18,7 +18,7 @@ from langgraph.graph.message import add_messages
 from langgraph.types import interrupt
 from pydantic import BaseModel, Field, ValidationError
 
-from steps import STEPS, bad_refs, earlier, keys_in, missing_from
+from steps import STEPS, bad_refs, earlier, keys_in
 
 
 class AgentState(TypedDict, total=False):
@@ -83,16 +83,33 @@ def chat_of(messages):
 
 
 def context_for(step, approved, summaries):
-    """Earlier approved work the agent builds on: short summaries of all of it, and the step right before in full."""
+    """Earlier approved work: short summaries of all of it, and the steps this one builds on in full."""
     before = [s for s in earlier(step) if s in approved]
     if not before:
         return ""
     lines = ["# Approved earlier work (short summaries; read_approved gives the full text)"]
     lines += [f"- {STEPS[s].title}: {summaries.get(s, '')}" for s in before]
-    last = before[-1]
-    lines += [f"\n# Approved {STEPS[last].title} (full, the input you build on)",
-              json.dumps(approved[last], ensure_ascii=False)]
+    for s in STEPS[step].builds_on:
+        if s in approved:
+            lines += [f"\n# Approved {STEPS[s].title} (full, the input you build on)",
+                      json.dumps(approved[s], ensure_ascii=False)]
     return "\n".join(lines)
+
+
+def without_old_tool_traffic(messages):
+    """What the model is sent: every message between PM and agent, plus tool calls and results of the current turn
+    only (since the last PM message or note). Older calls go out together with their results; the draft shown every
+    turn already holds what they did. The saved chat itself stays complete."""
+    turn = max((i for i, m in enumerate(messages) if isinstance(m, HumanMessage)), default=-1)
+    out = []
+    for i, m in enumerate(messages):
+        if i > turn or isinstance(m, HumanMessage):
+            out.append(m)
+        elif isinstance(m, AIMessage) and m.content and not (m.tool_calls or m.invalid_tool_calls):
+            out.append(m)
+        elif isinstance(m, AIMessage) and m.content:
+            out.append(AIMessage(m.content))  # keep its words, drop its old tool calls
+    return out
 
 
 def answer_broken(messages):
@@ -170,9 +187,6 @@ def build_agent(name, llm):
             problems = step.check(draft, state["approved"])
             if bad := dangling(state, draft):
                 problems.append(f"these keys no longer exist: {', '.join(bad)}")
-            all_keys = [k for keys in keys_in(draft).values() for k in keys]
-            if left := missing_from(a.report, all_keys):
-                problems.append(f"your report leaves out {', '.join(sorted(left))}; mention every item by its key")
             if problems:
                 raise ValueError("; ".join(problems))
             return "Sent for review.", {"kind": "submit", "report": a.report, "summary": a.summary}
@@ -194,8 +208,11 @@ def build_agent(name, llm):
             step.prompt, f"# Other parts of the plan (not yours)\n{others}",
             context_for(name, state["approved"], state.get("summaries") or {}),
             MODE_NOTES[state["mode"]],
-            "# Your current draft\n" + json.dumps(state.get("draft") or {}, ensure_ascii=False, indent=1)]))
-        reply = await with_tools[state["mode"]].ainvoke([SystemMessage(system), *answer_broken(state["messages"])])
+            "# Your current draft\n" + json.dumps(state.get("draft") or {}, ensure_ascii=False, indent=1),
+            step.numbers and "# Numbers computed by code (use these; never count or add them yourself)\n"
+            + step.numbers(state.get("draft") or {}, state["approved"])]))
+        sent = answer_broken(without_old_tool_traffic(state["messages"]))
+        reply = await with_tools[state["mode"]].ainvoke([SystemMessage(system), *sent])
         return {"messages": [reply]}
 
     def tools_node(state):

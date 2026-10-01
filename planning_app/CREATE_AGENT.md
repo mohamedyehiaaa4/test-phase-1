@@ -22,9 +22,10 @@ LangChain's prebuilt `create_agent` (the successor of LangGraph's deprecated `cr
 | Risk of breaking what was tested live | Manageable | Rerun the same live test script after switching. |
 
 ## Built-in middleware that solves open problems
-- **Summarization** — summarizes old messages near a size limit -> solves LATER.md #7 (long chats).
-- **Model call limit / Tool call limit** — stops an agent after too many calls -> solves LATER.md #8 (no smarter
-  stop for repeated refused calls).
+- **Summarization** — summarizes old messages near a size limit (long chats; already handled by dropping old tool
+  traffic, see CHANGES.md point 7).
+- **Model call limit / Tool call limit** — stops an agent after too many calls (a smarter stop for repeated refused
+  calls; decided not needed today: 0 loops in 524 tool calls).
 - **Model retry / Model fallback** — retry failed DeepSeek calls, or fall back to another model.
 - **Tool error** — turns tool errors into messages (like our "Not done: ...").
 - **Human-in-the-loop** — pauses for approval of tool calls.

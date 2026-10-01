@@ -160,7 +160,7 @@ create table public.sprints (
   goal       text not null,
   status     text not null check (status in ('planned', 'active', 'closed')),
   length     text not null default '',
-  capacity   text not null default '',
+  capacity   numeric check (capacity >= 0),  -- story points; null when the PM does not know
   notes      text not null default '',
   outcome    text not null default '',
   unique (version_id, key),
@@ -315,7 +315,7 @@ begin
 
     insert into public.sprints (version_id, key, number, goal, status, length, capacity, notes, outcome)
     select v_id, s->>'key', (s->>'number')::int, s->>'goal', s->>'status', coalesce(s->>'length', ''),
-           coalesce(s->>'capacity', ''), coalesce(s->>'notes', ''), coalesce(s->>'outcome', '')
+           (s->>'capacity')::numeric, coalesce(s->>'notes', ''), coalesce(s->>'outcome', '')
     from jsonb_array_elements(p_draft->'sprints') s;
     insert into public.sprint_tasks (sprint_id, task_id)
     select sp.id, (select id from public.tasks where version_id = v_id and key = k)

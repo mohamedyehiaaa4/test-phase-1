@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 from supabase import acreate_client
 
 from agent import build_agent, chat_of
-from steps import ORDER, PROMPTS, STEPS
+from steps import ORDER, PROMPTS, STEPS, what_changed
 
 # ---- state ------------------------------------------------------------------------------------------------------
 
@@ -37,6 +37,7 @@ class State(TypedDict, total=False):
     idea: str
     step: str | None      # the sub-agent that runs next
     mode: str             # build | change | check
+    fresh: bool           # a change or check starts now: the agent's draft restarts from the approved version
     note: HumanMessage | None  # message handed to that sub-agent on its next run
     outcome: dict | None  # how the sub-agent ended its run
     approved: dict        # step -> {version, summary, report, draft}: the current approved versions (from the DB)
@@ -48,12 +49,24 @@ class State(TypedDict, total=False):
 
 
 class Route(BaseModel):
-    target: Literal[tuple(ORDER)] | None = Field(description="The part that owns the request; null if unclear")
+    kind: Literal["change", "question", "unclear"] = Field(description="change: something must be different; "
+                                                           "question: the PM only asks; unclear: you cannot tell")
+    target: Literal[tuple(ORDER)] | None = Field(default=None, description="For a change: the part that owns it")
+    answer: str = Field(default="", description="For a question: the reply to the PM, short and plain")
     reason: str = Field(description="One short sentence")
 
 
 def note(text):
     return HumanMessage(text, name="note")
+
+
+def changed_so_far(change):
+    """The PM's request plus what really changed in each part so far (computed by code when each part was saved)."""
+    lines = [f'Earlier work was changed at the PM\'s request: "{change["request"]}".']
+    if change.get("diffs"):
+        lines.append("What changed so far:")
+        lines += [f"- {STEPS[d['step']].title}: " + "; ".join(d["lines"]) for d in change["diffs"]]
+    return "\n".join(lines)
 
 
 # ---- graph ------------------------------------------------------------------------------------------------------
@@ -69,12 +82,12 @@ def build(llm, db, checkpointer):
         change = s.get("change")
         if change and change["to_check"]:
             nxt, *rest = change["to_check"]
-            return {**base, "change": {**change, "to_check": rest}, "step": nxt, "mode": "check",
-                    "note": note(f'Earlier work was changed at the PM\'s request: "{change["request"]}".')}
+            return {**base, "change": {**change, "to_check": rest}, "step": nxt, "mode": "check", "fresh": True,
+                    "note": note(changed_so_far(change))}
         if change and change["back_to"]:
             return {**base, "change": None, "step": change["back_to"], "mode": "build",
-                    "note": note("Earlier work you build on was changed at the PM's request and your input above is "
-                                 "updated. Keep your draft, adjust only what the change affects, then continue.")}
+                    "note": note(changed_so_far(change) + "\nYour input above is updated. Keep your draft, adjust only "
+                                 "what the change affects, then continue.")}
         nxt = next((x for x in ORDER if x not in approved), None)
         first = HumanMessage(s["idea"]) if nxt == "discovery" else note("Begin your part now.")
         return {**base, "change": None, "step": nxt, "mode": "build", "note": first if nxt else None}
@@ -85,14 +98,14 @@ def build(llm, db, checkpointer):
             inp = {"mode": s["mode"], "outcome": None,
                    "approved": {k: v["draft"] for k, v in s["approved"].items()},
                    "summaries": {k: v["summary"] for k, v in s["approved"].items()}}
-            if s["mode"] != "build" and own:
-                inp["draft"] = own["draft"]  # changes start from exactly what is approved
+            if s.get("fresh") and own:
+                inp["draft"] = own["draft"]  # only when a change or check starts; later rounds keep the agent's edits
             if s.get("note"):
                 inp["messages"] = [s["note"]]
             out = await agents[name].ainvoke(inp)
             o, chat = out["outcome"], chat_of(out["messages"])
             seen = (s.get("logged") or {}).get(name, 0)
-            update = {"note": None, "outcome": {**o, "draft": out.get("draft") or {}},
+            update = {"note": None, "fresh": False, "outcome": {**o, "draft": out.get("draft") or {}},
                       "log": [{"step": name, **m} for m in chat[seen:]],
                       "logged": {**(s.get("logged") or {}), name: len(chat)}}
             if o["kind"] == "handoff":
@@ -118,9 +131,13 @@ def build(llm, db, checkpointer):
                                        "p_draft": o["draft"]}).execute()
         except APIError as e:  # the draft stays in the agent's memory; it fixes it and submits again
             return {"outcome": None, "note": note(f"Saving failed: {e.message}. Fix your draft and submit again.")}
-        if s["mode"] != "change":
+        if s["mode"] == "build":
             return {"outcome": None}
-        change = s["change"]
+        change = s["change"]  # change or check mode: record what really changed, for the parts after this one
+        if diff := what_changed(step, (s["approved"].get(step) or {}).get("draft"), o["draft"]):
+            change = {**change, "diffs": [*change.get("diffs", []), {"step": step, "lines": diff}]}
+        if s["mode"] == "check":
+            return {"outcome": None, "change": change}
         later = [x for x in ORDER[ORDER.index(step) + 1:] if x in s["approved"]]
         return {"outcome": None, "change": {**change, "to_check": later}}
 
@@ -134,11 +151,18 @@ def build(llm, db, checkpointer):
                           f"# Approved content of each part, in order\n{done}"),
             HumanMessage(f"Handed over by: {h['from'] or 'nobody (every part is approved)'}\n"
                          f"PM's words: {h['quote']}")])
-        return {"handoff": {**h, "target": r.target}}
+        return {"handoff": {**h, "kind": r.kind, "target": r.target, "answer": r.answer}}
 
     def guard(s):
         h, approved, change = s["handoff"], s["approved"], s.get("change")
         src, target, quote = h["from"], h.get("target"), h["quote"]
+        if h.get("kind") == "question" and h.get("answer"):  # answered: nothing is changed, reviewed or saved
+            if src:
+                return {"handoff": None, "step": src, "log": [{"step": src, "role": "assistant", "text": h["answer"]}],
+                        "note": note(f'The PM asked: "{quote}". It was already answered for them: "{h["answer"]}". '
+                                     "Do not comment on it, thank them or repeat it: continue your part where you "
+                                     "left off, as if the conversation had not paused.")}
+            return {"handoff": None, "step": None, "notice": h["answer"]}
         back_to = src if src and src not in approved else None
         if change and s.get("mode") == "change" and src == change["origin"]:  # the change was misrouted: send it on
             change, back_to = None, change["back_to"]
@@ -148,7 +172,7 @@ def build(llm, db, checkpointer):
                 return {"handoff": None, "step": src, "note": note(f'The PM wrote: "{quote}". {for_agent}')}
             return {"handoff": None, "step": None, "notice": for_pm}
 
-        if target is None:
+        if target is None or h.get("kind") != "change":
             return refuse("It is not clear which part of the plan this is about: ask the PM one short question.",
                           "I could not tell which part of the plan that is about. Which part should change?")
         if target == src:
@@ -159,7 +183,7 @@ def build(llm, db, checkpointer):
         if change:
             return refuse("Another change is still being applied. Tell the PM to ask again when it is done.",
                           "Another change is still being applied. Ask again when it is done.")
-        return {"handoff": None, "step": target, "mode": "change", "note": HumanMessage(quote, name="handoff"),
+        return {"handoff": None, "step": target, "mode": "change", "fresh": True, "note": HumanMessage(quote, name="handoff"),
                 "change": {"origin": target, "request": quote, "to_check": [], "back_to": back_to}}
 
     def idle(s):

@@ -6,8 +6,11 @@ Your part: turn the approved requirements into user stories.
   both are answered.
 - A story is one piece of value for one kind of user: "As a <role>, I want <goal>, so that <benefit>."
 - Building rules (follow them exactly, so the same requirements always give the same stories):
-  - Exactly one story per functional requirement, in the same order (S1 for FR1, S2 for FR2, ...). Never merge or
-    split requirements into stories unless the PM asks.
+  - Exactly one story per functional requirement, in the same order when you first write them (S1 for FR1, S2 for
+    FR2, ...); a story added later gets the next free number, and existing stories are never renumbered. Never merge or
+    split requirements into stories unless the PM asks. Splitting one requirement into several stories (or covering
+    several requirements with one story) is your own work, not a change to the requirements: when the PM asks for
+    it, or for a number of stories, do it.
   - Non-functional requirements are never stories of their own: attach each to every story it constrains.
   - Points, in the PM's scale (never invent a scale): 1 = trivial; 2 = one small rule; 3 = one screen or one
     backend action; 5 = several parts, or correctness under many users at once; 8 = too big, say so and suggest a
