@@ -1,10 +1,12 @@
 # Changes — built or decided
 
-Everything here was discussed and then built or decided, and is removed from `LATER.md`. Open ideas are in `LATER.md`.
+Everything here was discussed and then built, decided, or tried and undone; open ideas are in `LATER.md`. Sections are
+in the order the work was done. Quoted prompt text is the wording at the time: the prompt cleanup (below) reworded every
+prompt with the same rules, so the current wording is in `prompts/`.
 
 ---
 
-## Former LATER point 1 — Criteria check: coverage only
+## Criteria check: coverage only
 
 **Problem.** Before the criteria agent could submit, the code required every story to have a happy path AND a
 negative or edge case. Some stories have no real negative case ("see the class schedule"), so the agent was pushed
@@ -24,7 +26,7 @@ agent's judgment, following the prompt rules; the PM sees it at review.
 
 ---
 
-## Former LATER point 2 — Remove the regex check on the report text
+## Removed the regex check on the report text
 
 **Problem.** On submit, the code searched the agent's report with a regex for every item key (FR1, S3, SP1, M1…)
 and refused the report if one was missing. It only proved that keys appear in the text, not that the report is
@@ -51,7 +53,7 @@ exists. **What still checks on save:** key formats (`FR1`, `S1`, `C1`, `E1`, `T1
 
 ---
 
-## Former LATER point 3 — Sprint arithmetic in code
+## Sprint arithmetic in code
 
 **Problem.** The sprint agent added story points in its head and compared them with the capacity (models make
 arithmetic mistakes). It did not see the story points automatically: only the criteria were shown in full, and it
@@ -82,9 +84,7 @@ right data and the right numbers. The numbers are shown to the agent only (not a
 
 ---
 
----
-
-## Former LATER point 6, finding #5 — Stale reasons in related items (options A + C)
+## Stale reasons in related items (options A + C)
 
 **Problem.** Reasons were snapshots: T15's reason said "Ahmed already carries T1, T2, T4, T6, T7 and T9"; after the PM
 moved T9 to Omar, the data was right but T15's reason was out of date. The agent updates the item it changes, not
@@ -103,7 +103,7 @@ T15)". Works with no approved sprint yet. Syntax and full flow pass.
 
 ---
 
-## Former LATER point 7 — Long chats: drop old tool traffic (option B)
+## Long chats: drop old tool traffic (option B)
 
 **Measured first** (37 saved agent chats): the biggest chat was about 28,000 characters (~7,000 tokens, far below the
 model's limit), and 90–96% of it was tool traffic (save/remove calls and their answers), not conversation. That traffic
@@ -137,7 +137,7 @@ version while the report described the new one. Fix: a new state flag `fresh`, s
 Proven before/after with a test: after feedback the draft about to be approved was "v1" (edit lost); now it is
 "v2 EDITED", and that is what gets saved as version 2.
 
-**Bug 2 — an unassigned task crashed the assignments step** (`steps.py`, `team_load`, added for finding #5). A task left
+**Bug 2 — an unassigned task crashed the assignments step** (`steps.py`, `team_load`, added for stale reasons). A task left
 unassigned on purpose has `member_keys = []`, and `[][0]` raised `IndexError` on every turn. Fix: `(decided.get(t) or
 [None])[0]`; the load now shows "Not decided yet" and "Left unassigned" separately. Proven before/after with a test.
 
@@ -193,7 +193,7 @@ one shared message list for all agents (bigger prompts, role confusion, still no
 their own upcoming bookings"). Fake-model chain test: the change asked during stories, plus review feedback → the
 requirements' note had both idea changes; the stories' note (continuing) had the idea changes plus "added FR2 …;
 changed FR1"; the change cleared at the end. The flow check still passes. The real-data check also exposed key
-renumbering (now LATER.md #1).
+renumbering (next section).
 
 ---
 
@@ -258,7 +258,15 @@ with the PM's exact words: it will be shown to them, and then you continue where
 simple question gets a short answer; "when the PM asks to see something (for example 'show me the FRs'), show all of
 it, in the format they ask for (for example a table)".
 
+---
 
+## Sprint selection rule: dependencies first
+
+**Sprint selection rule** (`prompts/sprint.md`). The old rule ("add each story whose dependencies are met; skip what
+does not fit") let a needed story come later in the order, so two runs made two different wrong plans (one without
+booking, one without class setup). New rule: before adding a story, first add the stories it depends on (and what
+they depend on), count them all toward the capacity, and skip them together if they do not fit; never add a story
+without its dependencies.
 
 ---
 
@@ -276,7 +284,26 @@ one frontend task per story", written with a normal web app in mind.
 | `prompts/assignments.md` | New: "When the PM asks for advice (for example which roles the project needs), give a clear suggestion based on the planned work, marked as a suggestion. Never add a person or role to the team unless the PM confirms it." |
 | `prompts/sprint.md` | "one backend task and one frontend task per story" → "one task for each kind of work the story really needs (for example backend, frontend, AI/ML, data, testing), each with that kind as its work type. A story that needs testing gets a testing task." |
 
-**Follow-up (PM asked).** Suggested roles should be specific, not only backend/frontend. Added to the advice rule in `prompts/assignments.md`: "Suggest specific roles named after the real work in this project's tasks (for example 'LLM / prompt engineer', 'search and data integration developer', 'QA tester'), each with the tasks it would cover, never only broad roles such as backend or frontend developer."
+**Follow-up (PM asked).** Suggested roles should be specific, not only backend/frontend. Added to the advice rule in
+`prompts/assignments.md`: "Suggest specific roles named after the real work in this project's tasks (for example 'LLM /
+prompt engineer', 'search and data integration developer', 'QA tester'), each with the tasks it would cover, never only
+broad roles such as backend or frontend developer." (A first try that made sprint task work types very specific was
+undone: the PM meant the suggested roles, not the tasks.)
+
+---
+
+## Prompt cleanup (same rules, clearer structure)
+
+Every prompt rewritten with the same structure: who you are / your part, Start, Building rules, Report (the shared
+rules: How you work, Requests outside your part, Talking to the PM, Your report; the router: 1. decide the kind,
+2. pick the target, 3. answer). Shared rules are written once in `rules.md` (never renumber, every item by key, never
+invent, assumptions) and no longer repeated in each part; key rules keep their short reason. No rule was dropped; the
+strong wording of the heading rule stays. About 12% fewer words (3043 -> 2676).
+
+Tested on a full run (AI study advisor): discovery, requirements, stories and criteria behaved as before or better
+(one question per message, no system talk, empty headings left out, table format kept, key order kept). That run also
+had the groundwork rules (see "Tried and undone"); the final stories and sprint prompts (the same rules as before the
+cleanup, reworded) have not been run since.
 
 ---
 
@@ -302,15 +329,29 @@ separate Q&A agent is not needed now.
 
 ---
 
-## Related change: sprint selection rule
+## Tried and undone (same session, PM's decision)
 
-**Sprint selection rule** (`prompts/sprint.md`). The old rule ("add each story whose dependencies are met; skip what
-does not fit") let a needed story come later in the order, so two runs made two different wrong plans (one without
-booking, one without class setup). New rule: before adding a story, first add the stories it depends on (and what
-they depend on), count them all toward the capacity, and skip them together if they do not fit; never add a story
-without its dependencies.
+All built, then undone together at the PM's request ("this makes many problems"); code, prompts and the live database
+went back to the pushed version. A copy of the removed files was kept outside the project.
 
-## Not done yet
-- Not pushed to GitHub.
-- Not tested end to end with the real model since these changes.
-- The database is empty (cleared by the PM): add the project and PM rows (end of `schema.sql`) before using the app.
+- **Groundwork in the plan** (the problem stays open as `LATER.md` point 1). First as separate groundwork stories ("As
+  the development team, we need…"), then, by the PM's choice, the strict Scrum way: a groundwork task inside the first
+  story that needs it. To close the gap that story points were set before groundwork was known, option B: the stories
+  step includes the groundwork in the points of the first story that needs it (by priority, then key), and the sprint
+  puts the task in that same story.
+- **Epics moved from the sprint step to the stories step** (an epic is an area of the product, not part of a sprint;
+  Jira needs epics before stories). `Epic` moved to the stories step with a check "S5 in no epic", and `save_step` /
+  `load_step` saved and loaded epics with the stories. Tested on the live database (rolled back), then undone; the
+  live functions are back to the old version.
+- **"Work done by an AI model is AI work, not backend"** in the sprint task rule.
+
+**What the test run showed** (prompt cleanup plus the rules above, AI study advisor):
+- Groundwork was missed ("no shared piece needed") until the rule became an explicit step ("before you set points,
+  list what must already exist for the stories to work…"); then the agent was found (with web search) in S3 and a
+  data store in S6, with S3's points raised to 5. Small slips: S2 needed the agent first; login was called groundwork
+  although S9 is the login story.
+- The sprint went over capacity: 32 points of 20, and 24 after "keep a running total". Earlier runs without these rules
+  always stayed within capacity (18, 19, 12 and 18 of 20), so it was put down to the groundwork rules (bigger points,
+  a longer prompt); a note on this is in `LATER.md` point 1.
+- Epics were made in the stories step as intended.
+

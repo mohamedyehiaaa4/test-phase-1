@@ -19,6 +19,8 @@ Ordered by importance: the first one matters most. Everything already built or d
     dependencies-first rule puts it in the first sprint. Also: work done by an AI model is AI work, not backend.
   - Criteria and assignments need no change: groundwork stories use normal S keys and get criteria and owners.
 - Fits point 3 (no NFR-only story): a groundwork story still links to functional requirements.
+- When groundwork is added, watch the sprint capacity: in a test with groundwork rules the sprint went over
+  (32, then 24 points of 20); earlier runs without them always stayed within it.
 
 ## 2. Slow turns look frozen — MEDIUM
 Rewriting 45 criteria took several minutes; the app only shows "Working...", so a user may think it froze. Long turns
