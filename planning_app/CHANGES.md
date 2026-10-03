@@ -110,8 +110,7 @@ model's limit), and 90–96% of it was tool traffic (save/remove calls and their
 repeats what the draft, shown every turn, already holds.
 
 **Options.** A: leave it. B: drop old tool traffic from what is sent. C: an AI summary of old messages (not needed: the
-real conversation is small; extra call; could lose what the PM said). D: LangChain's summarization middleware (only if
-switching to `create_agent`). Chosen: B.
+real conversation is small; extra call; could lose what the PM said). Chosen: B.
 
 **Changes.**
 | File | Change |
