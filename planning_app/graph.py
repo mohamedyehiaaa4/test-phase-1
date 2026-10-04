@@ -40,7 +40,8 @@ class State(TypedDict, total=False):
     fresh: bool           # a change or check starts now: the agent's draft restarts from the approved version
     note: HumanMessage | None  # message handed to that sub-agent on its next run
     outcome: dict | None  # how the sub-agent ended its run
-    approved: dict        # step -> {version, summary, report, draft}: the current approved versions (from the DB)
+    reviewing: dict | None  # submitted work the PM answered with a message: shown again if that was only a question
+    approved: dict        # step -> {version, summary, draft}: the current approved versions (from the DB)
     change: dict | None   # {origin, request, to_check: [steps], back_to: step | None}
     handoff: dict | None  # {from: step | None, quote, target: step | None}
     notice: str | None    # message for the PM while idle
@@ -87,7 +88,8 @@ def build(llm, db, checkpointer):
         if change and change["back_to"]:
             return {**base, "change": None, "step": change["back_to"], "mode": "build",
                     "note": note(changed_so_far(change) + "\nYour input above is updated. Keep your draft, adjust only "
-                                 "what the change affects, then continue.")}
+                                 "what the change affects, then continue (if your work was complete, submit it "
+                                 "again). Do not tell the PM about this update or your draft: just continue.")}
         nxt = next((x for x in ORDER if x not in approved), None)
         first = HumanMessage(s["idea"]) if nxt == "discovery" else note("Begin your part now.")
         return {**base, "change": None, "step": nxt, "mode": "build", "note": first if nxt else None}
@@ -110,6 +112,9 @@ def build(llm, db, checkpointer):
                       "logged": {**(s.get("logged") or {}), name: len(chat)}}
             if o["kind"] == "handoff":
                 update["handoff"] = {"from": name, "quote": o["quote"], "target": None}
+            r = s.get("reviewing")
+            if not (o["kind"] == "handoff" and r and r["draft"] == update["outcome"]["draft"]):
+                update["reviewing"] = None  # the agent worked on its draft: that review is out of date
             return update
         return run
 
@@ -119,16 +124,15 @@ def build(llm, db, checkpointer):
         said = [{"step": step, "role": "assistant", "text": o["report"]},
                 {"step": step, "role": "user", "text": "Approved." if answer is True else answer}]
         if answer is True:
-            return {"outcome": {**o, "approved": True}, "log": said}
-        return {"outcome": None, "note": HumanMessage(answer, name="review"), "log": said}
+            return {"outcome": {**o, "approved": True}, "reviewing": None, "log": said}
+        return {"outcome": None, "reviewing": o, "note": HumanMessage(answer, name="review"), "log": said}
 
     async def save(s):
         o, step = s["outcome"], s["step"]
-        text = s["approved"][step] if o["kind"] == "no_impact" else o  # no change: keep the approved report
+        summary = (s["approved"][step] if o["kind"] == "no_impact" else o)["summary"]  # no change: keep the summary
         try:
             await db.rpc("save_step", {"p_project": s["project_id"], "p_step": step, "p_by": s["pm_id"],
-                                       "p_summary": text["summary"], "p_report": text["report"],
-                                       "p_draft": o["draft"]}).execute()
+                                       "p_summary": summary, "p_draft": o["draft"]}).execute()
         except APIError as e:  # the draft stays in the agent's memory; it fixes it and submits again
             return {"outcome": None, "note": note(f"Saving failed: {e.message}. Fix your draft and submit again.")}
         if s["mode"] == "build":
@@ -150,7 +154,7 @@ def build(llm, db, checkpointer):
             SystemMessage((PROMPTS / "router.md").read_text(encoding="utf-8") + f"\n\n# Parts\n{parts}\n\n"
                           f"# Approved content of each part, in order\n{done}"),
             HumanMessage(f"Handed over by: {h['from'] or 'nobody (every part is approved)'}\n"
-                         f"PM's words: {h['quote']}")])
+                         f"PM's request: {h['quote']}")])
         return {"handoff": {**h, "kind": r.kind, "target": r.target, "answer": r.answer}}
 
     def guard(s):
@@ -158,10 +162,13 @@ def build(llm, db, checkpointer):
         src, target, quote = h["from"], h.get("target"), h["quote"]
         if h.get("kind") == "question" and h.get("answer"):  # answered: nothing is changed, reviewed or saved
             if src:
-                return {"handoff": None, "step": src, "log": [{"step": src, "role": "assistant", "text": h["answer"]}],
-                        "note": note(f'The PM asked: "{quote}". It was already answered for them: "{h["answer"]}". '
-                                     "Do not comment on it, thank them or repeat it: continue your part where you "
-                                     "left off, as if the conversation had not paused.")}
+                back = {"handoff": None, "step": src, "log": [{"step": src, "role": "assistant", "text": h["answer"]}]}
+                if s.get("reviewing"):  # asked during a review and nothing changed: show the same review again
+                    return {**back, "outcome": s["reviewing"], "reviewing": None}
+                return {**back, "note": note(f'The PM asked: "{quote}". It was already answered for them: '
+                                             f'"{h["answer"]}". Do not comment on it, thank them or repeat it: '
+                                             "continue your part where you left off, as if the conversation had not "
+                                             "paused.")}
             return {"handoff": None, "step": None, "notice": h["answer"]}
         back_to = src if src and src not in approved else None
         if change and s.get("mode") == "change" and src == change["origin"]:  # the change was misrouted: send it on
@@ -183,7 +190,8 @@ def build(llm, db, checkpointer):
         if change:
             return refuse("Another change is still being applied. Tell the PM to ask again when it is done.",
                           "Another change is still being applied. Ask again when it is done.")
-        return {"handoff": None, "step": target, "mode": "change", "fresh": True, "note": HumanMessage(quote, name="handoff"),
+        return {"handoff": None, "reviewing": None, "step": target, "mode": "change", "fresh": True,
+                "note": HumanMessage(quote, name="handoff"),
                 "change": {"origin": target, "request": quote, "to_check": [], "back_to": back_to}}
 
     def idle(s):
@@ -207,7 +215,8 @@ def build(llm, db, checkpointer):
     g.add_conditional_edges("review", lambda s: "save" if s.get("outcome") else s["step"], ["save", *ORDER])
     g.add_conditional_edges("save", lambda s: s["step"] if s.get("note") else "load", ["load", *ORDER])
     g.add_edge("router", "guard")
-    g.add_conditional_edges("guard", to_step, [*ORDER, "idle"])
+    back_to_review = lambda s: "review" if (s.get("outcome") or {}).get("kind") == "submit" else to_step(s)  # noqa: E731
+    g.add_conditional_edges("guard", back_to_review, ["review", *ORDER, "idle"])
     g.add_edge("idle", "router")
     return g.compile(checkpointer=checkpointer)
 

@@ -81,7 +81,7 @@ class Story(Item):
     requirement_keys: list[str] = ref("requirements", "Requirements it implements (functional) or is constrained "
                                       "by (non-functional)", min_length=1)
     points: float | None = Field(default=None, ge=0, description="Your proposed size in the PM's scale: 1 trivial, "
-                                 "2 one small rule, 3 one screen or backend action, 5 several parts or correctness "
+                                 "2 one small rule, 3 one complete action, 5 several parts or correctness "
                                  "under many users, 8 too big (suggest a split)")
     priority: Priority
     priority_reason: str = Field(min_length=1)
@@ -116,8 +116,11 @@ class Task(Item):
     key: str = Field(pattern=r"^T\d+$", description="T1, T2...")
     story_key: str = ref("stories", "The story it belongs to")
     title: str = Field(min_length=1)
-    description: str = ""
-    work_type: str = Field(min_length=1, description="The kind of work or skill it needs, in a few words")
+    description: str = Field(default="", description="What to build, the rules it must enforce, and the acceptance "
+                             "criteria (keys) it serves")
+    work_type: str = Field(min_length=1, description="The narrowest specialist role on a real team that would own this "
+                           "task, named after its particular technology or concern, never after a layer or side "
+                           "of the system")
     priority: Priority
     depends_on: list[str] = ref("tasks", "Tasks that must be done first", default=[])
 
@@ -153,7 +156,8 @@ class Assignment(Item):
     key_field = "task_key"
     task_key: str = ref("tasks", "A task of the active sprint")
     member_keys: list[str] = ref("members", "Main owner first, then helpers. Empty = unassigned", default=[])
-    required_role: str = Field(default="", description="The kind of role the task needs")
+    required_role: str = Field(default="", description="The specialist role the task needs, as specific as a job "
+                               "title on a real team")
     rationale: str = Field(default="", description="One short sentence about this task only: why this person's role "
                            "fits it (or why nobody fits). Never counts or lists of other tasks")
 

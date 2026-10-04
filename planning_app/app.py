@@ -59,8 +59,7 @@ with st.sidebar:
     for name in ORDER:
         status = ("working" if values.get("step") == name and pending
                   else f"approved v{approved[name]['version']}" if name in approved else "not started")
-        with st.expander(f"{STEPS[name].title} — {status}"):
-            st.markdown(approved[name]["report"] if name in approved else "_Nothing approved yet._")
+        st.markdown(f"**{STEPS[name].title}** — {status}")
     if values.get("change"):
         st.info(f"Applying a change to {STEPS[values['change']['origin']].title}.")
 

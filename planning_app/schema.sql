@@ -5,9 +5,9 @@
 -- at the rows of the version that was current when the later step was saved.
 --
 -- The app talks to it with two functions that use the same JSON shape as the agents' drafts:
---   save_step(project, step, approved_by, summary, report, draft) -> new version number (one transaction)
+--   save_step(project, step, approved_by, summary, draft) -> new version number (one transaction)
 --   load_step(project, step) -> draft JSON of the current version, or null
---   load_project(project) -> every current step at once: {step: {version, summary, report, draft}}
+--   load_project(project) -> every current step at once: {step: {version, summary, draft}}
 
 -- ============================================================================================================
 -- 1. Tables
@@ -34,7 +34,6 @@ create table public.step_versions (
   step        text not null check (step in ('discovery', 'requirements', 'stories', 'criteria', 'sprint', 'assignments')),
   version     int  not null check (version > 0),
   summary     text not null,  -- short summary handed to later steps
-  report      text not null,  -- the text the PM approved
   approved_by uuid not null references public.users (id),
   approved_at timestamptz not null default now(),
   unique (project_id, step, version)
@@ -206,7 +205,7 @@ create index assignment_members_member_id_idx on public.assignment_members (memb
 
 -- The current (latest) version of each step
 create view public.current_steps with (security_invoker = true) as
-select distinct on (project_id, step) id, project_id, step, version, summary, report, approved_by, approved_at
+select distinct on (project_id, step) id, project_id, step, version, summary, approved_by, approved_at
 from public.step_versions
 order by project_id, step, version desc;
 
@@ -219,7 +218,7 @@ returns bigint language sql stable set search_path = '' as $$
 $$;
 
 create or replace function public.save_step(
-  p_project uuid, p_step text, p_by uuid, p_summary text, p_report text, p_draft jsonb)
+  p_project uuid, p_step text, p_by uuid, p_summary text, p_draft jsonb)
 returns int language plpgsql set search_path = '' as $$
 declare
   v_version int;
@@ -233,8 +232,8 @@ begin
 
   select coalesce(max(version), 0) + 1 into v_version
   from public.step_versions where project_id = p_project and step = p_step;
-  insert into public.step_versions (project_id, step, version, summary, report, approved_by)
-  values (p_project, p_step, v_version, p_summary, p_report, p_by) returning id into v_id;
+  insert into public.step_versions (project_id, step, version, summary, approved_by)
+  values (p_project, p_step, v_version, p_summary, p_by) returning id into v_id;
 
   if p_step = 'discovery' then
     insert into public.discovery_summaries (version_id, title, summary, assumptions)
@@ -430,7 +429,7 @@ end $$;
 create or replace function public.load_project(p_project uuid)
 returns jsonb language sql stable set search_path = '' as $$
   select coalesce(jsonb_object_agg(step, jsonb_build_object(
-           'version', version, 'summary', summary, 'report', report,
+           'version', version, 'summary', summary,
            'draft', public.load_step(p_project, step))), '{}')
   from public.current_steps where project_id = p_project
 $$;

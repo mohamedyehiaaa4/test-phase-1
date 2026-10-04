@@ -33,13 +33,14 @@ class AgentState(TypedDict, total=False):
 class Submit(BaseModel):
     """Send your complete draft to the PM for review."""
     report: str = Field(min_length=1, description="The full review text for the PM")
-    summary: str = Field(min_length=1, description="A short summary (a few sentences) of the whole result, for "
-                         "later work to build on")
+    summary: str = Field(min_length=1, description="A short summary (a few sentences) of your own work only, for "
+                         "later work to build on. Never repeat facts, numbers or names that belong to earlier parts")
 
 
 class NotMyJob(BaseModel):
     """The PM asked for something that belongs to another part of the plan. This ends your turn."""
-    quote: str = Field(min_length=1, description="The PM's exact words")
+    quote: str = Field(min_length=1, description="The PM's request, complete enough to understand on its own: their "
+                       "words plus what earlier messages made clear")
 
 
 class NoImpact(BaseModel):

@@ -22,7 +22,8 @@ Use only these headings, in this order:
 
 Write a heading ONLY if the PM said something for it in this chat, and every sentence under it must come from the PM's
 own words. Never fill a heading from general knowledge, from what apps like this usually do, or by repeating another
-heading. A missing heading is correct; a filled-in guess is wrong.
+heading, and never write that a heading is empty or was not discussed: leave it out. A missing heading is correct;
+a filled-in guess is wrong.
 
 # Report
 The summary itself, then a line asking what you may have got wrong.
