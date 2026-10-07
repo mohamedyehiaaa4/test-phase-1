@@ -1,21 +1,24 @@
-"""Streamlit chat for the planning graph. Run from this folder:  streamlit run app.py"""
+"""Streamlit chat for the planning graph (the test screen). Run from this folder:  streamlit run app.py
+
+Only drawing lives here; the planning itself is the `planning` package (planning/service.py drives it)."""
 import asyncio
 import os
+import queue
 import threading
 from pathlib import Path
 
 import streamlit as st
 from dotenv import load_dotenv
-from langgraph.types import Command
 
 HERE = Path(__file__).parent
 load_dotenv(HERE / ".env")
 load_dotenv(HERE.parent / ".env")  # the project's existing .env one folder up
 
-from graph import open_graph  # noqa: E402  (needs the env loaded first)
-from steps import ORDER, STEPS  # noqa: E402
+from planning import service  # noqa: E402  (needs the env loaded first)
+from planning.connections import open_graph  # noqa: E402
+from planning.steps import STEPS  # noqa: E402
 
-NEEDED = ["DEEPSEEK_API_KEY", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_DB_URL", "PROJECT_ID", "PM_USER_ID"]
+NEEDED = ["DEEPSEEK_API_KEY", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "DATABASE_URL", "PROJECT_ID", "PM_USER_ID"]
 
 st.set_page_config(page_title="Planning", page_icon=":clipboard:", layout="wide")
 if missing := [n for n in NEEDED if not os.environ.get(n)]:
@@ -32,76 +35,86 @@ def runtime():
     def run(coro):
         return asyncio.run_coroutine_threadsafe(coro, loop).result()
 
-    return run(open_graph()), run
+    return run(open_graph()), run, loop
 
 
-graph, run = runtime()
-config = {"configurable": {"thread_id": os.environ["PROJECT_ID"]}, "recursion_limit": 200}
+graph, run, loop = runtime()
 
 
-def send(value):
-    with st.spinner("Working..."):
+def send(action, *args):
+    """Run one service action, showing each change an agent writes while it works."""
+    events = queue.Queue()
+    done = asyncio.run_coroutine_threadsafe(action(graph, *args, on_step=events.put), loop)
+    done.add_done_callback(lambda _: events.put(None))
+    with st.status("Working...") as status:
+        count = 0
+        while (event := events.get()) is not None:
+            count += 1
+            status.update(label=f"{event} ({count} so far)...")
         try:
-            run(graph.ainvoke(value, config))
+            done.result()
         except Exception as e:  # the last saved progress is kept; show the error and let the PM try again
             st.session_state.error = f"{type(e).__name__}: {e}"
     st.rerun()
 
 
-snapshot = run(graph.aget_state(config))
-values = snapshot.values
-pending = snapshot.interrupts[0].value if snapshot.interrupts else None
-approved = values.get("approved", {})
+def report(text, changes):
+    """A review report. A later review of the same part shows what changed first, with the full report folded."""
+    if changes is None:
+        st.markdown(text)
+        return
+    st.markdown("**What changed:**\n" + ("\n".join(f"- {c}" for c in changes) or "- nothing since you last saw it"))
+    with st.expander("Show the full report"):
+        st.markdown(text)
+
+
+now = run(service.status(graph))
+pending = now["waiting"]
 
 # ---- sidebar: where the plan stands (read-only) ---------------------------------------------------------------
 with st.sidebar:
     st.header("Plan")
-    for name in ORDER:
-        status = ("working" if values.get("step") == name and pending
-                  else f"approved v{approved[name]['version']}" if name in approved else "not started")
-        st.markdown(f"**{STEPS[name].title}** — {status}")
-    if values.get("change"):
-        st.info(f"Applying a change to {STEPS[values['change']['origin']].title}.")
+    for p in now["parts"]:
+        st.markdown(f"**{p['title']}** — {p['status']}")
+    if now["changing"]:
+        st.info(f"Applying a change to {now['changing']}.")
 
 # ---- main: one chat for every agent ------------------------------------------------------------------------------
 st.title("Planning")
 if err := st.session_state.pop("error", None):
     st.error(err)
 
-if not values:
+if not now["started"]:
     if idea := st.chat_input("Describe your project idea to start"):
-        send({"project_id": os.environ["PROJECT_ID"], "pm_id": os.environ["PM_USER_ID"], "idea": idea})
+        send(service.start, idea)
     st.stop()
 
-chat = list(values.get("log", []))
-if pending and pending["type"] == "question":  # the running agent's messages that are not in the log yet
-    seen = values.get("logged", {}).get(pending["step"], 0)
-    chat += [{"step": pending["step"], **m} for m in pending["chat"][seen:]]
-
 part = "start"
-for m in chat:
+for m in now["chat"]:
     if m["step"] != part:  # a small divider when another part of the plan takes over
         part = m["step"]
-        st.caption(f"— {STEPS[part].title if part else 'Plan complete'} —")
-    st.chat_message(m["role"]).markdown(m["text"])
+        if part:  # messages from no part (check-ins, the closing message) get no divider
+            st.caption(f"— {STEPS[part].title} —")
+    with st.chat_message(m["role"]):
+        report(m["text"], m.get("changes"))
 
-failed = next((t.error for t in snapshot.tasks if t.error), None)
-if failed or not pending:  # a step failed (for example the model API): nothing is lost, run it again
-    st.error(f"Something went wrong: {failed}" if failed else "The planning graph stopped without waiting for you.")
+if now["error"] or not pending:  # a step failed (for example the model API): nothing is lost, run it again
+    st.error(f"Something went wrong: {now['error']}" if now["error"]
+             else "The planning stopped unexpectedly. Nothing is lost.")
     if st.button("Try again", type="primary"):
-        send(None)
+        send(service.retry)
     st.stop()
 
 if pending["type"] == "review":
     if pending["step"] != part:
         st.caption(f"— {STEPS[pending['step']].title} —")
     with st.chat_message("assistant"):
-        st.markdown(pending["text"])
+        report(pending["text"], pending.get("changes"))
         if st.button("Approve", type="primary"):
-            send(Command(resume=True))
+            send(service.approve)
 elif pending["type"] == "idle":
     st.chat_message("assistant").markdown(pending["text"])
 
 placeholder = "Approve above, or say what to change" if pending["type"] == "review" else "Your message"
 if message := st.chat_input(placeholder):
-    send(Command(resume=message))
+    send(service.answer, message)

@@ -1,6 +1,26 @@
 # Implementation plan
 
-All phases below are built. Ideas for later are in `LATER.md`; the Jira design is in `JIRA.md`.
+All phases below are built. Ideas for later are in `LATER.md`.
+
+## Files
+
+```
+planning_app/
+  app.py              Streamlit test screen (run here: streamlit run app.py)
+  requirements.txt
+  docs/               PLAN.md (this file), CHANGES.md, LATER.md, DECISIONS.md
+  planning/           the planning phase, self-contained (moves into the web platform as is)
+    service.py        start / answer / approve / retry / status: what a screen or an API calls
+    connections.py    DeepSeek + Supabase setup, builds the graph
+    graph.py          the main flow: load, steps, review, save, router, guard, idle
+    agent.py          one sub-agent (talk, tools, submit)
+    messages.py       what the PM sees of a chat, what the model is sent
+    steps.py          the four steps, keys and links, what changed between versions
+    items.py          the shape of every item (summary, requirement, story, criterion...)
+    checks.py         when a step's draft is complete
+    prompts/          shared rules, one prompt per step, the router
+    schema.sql        tables and save/load functions (Supabase)
+```
 
 ## Design in one picture
 
@@ -33,7 +53,7 @@ START → load ─► pick next step ─► [step sub-agent] ──submit──�
 1. **Setup** — folder, `requirements.txt`, `.env.example`, install packages, Supabase MCP, skills, `CLAUDE.md`.
 2. **Database** — `schema.sql`: the tables, `save_step` / `load_step` / `load_project` functions, a `langgraph`
    schema for checkpoints, access rules; seed the project and PM with the ids in `.env`.
-3. **Steps** — `steps.py`: the item shapes (Pydantic) and the six step definitions (prompt, items, links,
+3. **Steps** — `steps.py`: the item shapes (Pydantic) and the four step definitions (prompt, items, links,
    done check); `prompts/*.md`.
 4. **Sub-agent** — `agent.py`: one builder that turns a step definition into a subgraph (model → tools loop,
    PM pause on plain text, save/remove item tools, submit, not_my_job, no_impact, read_approved).

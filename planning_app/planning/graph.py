@@ -1,4 +1,4 @@
-r"""The main planning graph: six sub-agents, a routing main agent, review, save, and the change flow.
+r"""The main planning graph: four sub-agents, a routing main agent, review, save, and the change flow.
 
     START -> load --(next step)--> <step> --submit----> review --approve--> save --> load
                \                    |  \--no_impact-----------------------/  \--save failed--> <step>
@@ -11,22 +11,17 @@ the paused step continues. Everything the PM sees is one chat: `log` collects it
 """
 import json
 import operator
-import os
 from typing import Annotated, Literal, TypedDict
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_deepseek import ChatDeepSeek
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import START, StateGraph
 from langgraph.types import interrupt
 from postgrest.exceptions import APIError
-from psycopg.rows import dict_row
-from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, Field
-from supabase import acreate_client
 
-from agent import build_agent, chat_of
-from steps import ORDER, PROMPTS, STEPS, what_changed
+from .agent import build_agent
+from .messages import chat_of
+from .steps import ORDER, PROMPTS, STEPS, what_changed
 
 # ---- state ------------------------------------------------------------------------------------------------------
 
@@ -41,19 +36,23 @@ class State(TypedDict, total=False):
     note: HumanMessage | None  # message handed to that sub-agent on its next run
     outcome: dict | None  # how the sub-agent ended its run
     reviewing: dict | None  # submitted work the PM answered with a message: shown again if that was only a question
+    seen: dict            # step -> the draft the PM last reviewed without approving it (to show what changed since)
     approved: dict        # step -> {version, summary, draft}: the current approved versions (from the DB)
     change: dict | None   # {origin, request, to_check: [steps], back_to: step | None}
     handoff: dict | None  # {from: step | None, quote, target: step | None}
     notice: str | None    # message for the PM while idle
+    resume: dict | None   # {step, note}: after a change, the paused part that continues once the PM says so
     log: Annotated[list, operator.add]  # the one chat the PM sees: {step, role, text}
     logged: dict          # step -> how much of that agent's own chat is already in `log`
 
 
 class Route(BaseModel):
-    kind: Literal["change", "question", "unclear"] = Field(description="change: something must be different; "
-                                                           "question: the PM only asks; unclear: you cannot tell")
+    kind: Literal["change", "question", "unclear", "continue"] = Field(
+        description="change: something must be different; question: the PM only asks; unclear: you cannot tell; "
+                    "continue: after a finished change, the PM has nothing more to change or ask")
     target: Literal[tuple(ORDER)] | None = Field(default=None, description="For a change: the part that owns it")
-    answer: str = Field(default="", description="For a question: the reply to the PM, short and plain")
+    answer: str = Field(default="", description="For a question: the reply to the PM, short and plain. When unclear: "
+                        "one short question that uses the recent conversation to name what they most likely mean")
     reason: str = Field(description="One short sentence")
 
 
@@ -85,13 +84,18 @@ def build(llm, db, checkpointer):
             nxt, *rest = change["to_check"]
             return {**base, "change": {**change, "to_check": rest}, "step": nxt, "mode": "check", "fresh": True,
                     "note": note(changed_so_far(change))}
-        if change and change["back_to"]:
-            return {**base, "change": None, "step": change["back_to"], "mode": "build",
-                    "note": note(changed_so_far(change) + "\nYour input above is updated. Keep your draft, adjust only "
-                                 "what the change affects, then continue (if your work was complete, submit it "
-                                 "again). Do not tell the PM about this update or your draft: just continue.")}
+        if change and change["back_to"]:  # the change is done: check in with the PM before the paused part goes on
+            back = change["back_to"]
+            return {**base, "change": None, "step": None,
+                    "resume": {"step": back, "note": changed_so_far(change) + "\nYour input above is updated. Keep your "
+                               "draft and adjust only what the change affects. Open your next message to the PM with one "
+                               "short line on what the change means for your work, then continue (if your work was "
+                               "complete, submit it again)."},
+                    "notice": f"Done: your change to the {STEPS[change['origin']].title.lower()} is approved. Anything "
+                              f"else you'd like to change or ask before we go back to the {STEPS[back].title.lower()}?"}
         nxt = next((x for x in ORDER if x not in approved), None)
-        first = HumanMessage(s["idea"]) if nxt == "discovery" else note("Begin your part now.")
+        first = HumanMessage(s["idea"]) if nxt == "discovery" else note(
+            "Begin your part now with your first message to the PM. The approved work above is your input.")
         return {**base, "change": None, "step": nxt, "mode": "build", "note": first if nxt else None}
 
     def step_node(name):
@@ -119,13 +123,19 @@ def build(llm, db, checkpointer):
         return run
 
     def review(s):
-        o, step = s["outcome"], s["step"]
-        answer = interrupt({"type": "review", "step": step, "text": o["report"]})
-        said = [{"step": step, "role": "assistant", "text": o["report"]},
+        o, step, seen = s["outcome"], s["step"], s.get("seen") or {}
+        # Compared with what the PM saw last: their last unapproved review of this step, else the approved version
+        # when this is a change. None on a first review: the full report is shown as it is.
+        before = seen[step] if step in seen else s["approved"][step]["draft"] if s["mode"] != "build" else None
+        changes = None if before is None else what_changed(step, before, o["draft"], values=True)
+        answer = interrupt({"type": "review", "step": step, "text": o["report"], "changes": changes})
+        said = [{"step": step, "role": "assistant", "text": o["report"], "changes": changes},
                 {"step": step, "role": "user", "text": "Approved." if answer is True else answer}]
         if answer is True:
-            return {"outcome": {**o, "approved": True}, "reviewing": None, "log": said}
-        return {"outcome": None, "reviewing": o, "note": HumanMessage(answer, name="review"), "log": said}
+            return {"outcome": {**o, "approved": True}, "reviewing": None, "log": said,
+                    "seen": {k: v for k, v in seen.items() if k != step}}
+        return {"outcome": None, "reviewing": o, "note": HumanMessage(answer, name="review"), "log": said,
+                "seen": {**seen, step: o["draft"]}}
 
     async def save(s):
         o, step = s["outcome"], s["step"]
@@ -150,16 +160,29 @@ def build(llm, db, checkpointer):
         parts = "\n".join(f"- {name}: {STEPS[name].owns}" for name in ORDER)
         done = "\n\n".join(f"## {name}\n{json.dumps(s['approved'][name]['draft'], ensure_ascii=False)}"
                            for name in ORDER if name in s["approved"]) or "(nothing yet)"
+        resume = s.get("resume")
+        waiting = (f"nobody: a change was just finished and the {STEPS[resume['step']].title.lower()} waits to "
+                   "continue (kind continue if the PM has nothing more to change or ask)" if resume
+                   else "nobody (every part is approved)")
+        recent = "\n".join(f"{'PM' if m['role'] == 'user' else 'You'}: {m['text'][:600]}"
+                           for m in (s.get("log") or [])[-6:]) or "(none)"
         r = await router_llm.ainvoke([
             SystemMessage((PROMPTS / "router.md").read_text(encoding="utf-8") + f"\n\n# Parts\n{parts}\n\n"
-                          f"# Approved content of each part, in order\n{done}"),
-            HumanMessage(f"Handed over by: {h['from'] or 'nobody (every part is approved)'}\n"
-                         f"PM's request: {h['quote']}")])
+                          f"# Approved content of each part, in order\n{done}\n\n# Recent conversation\n{recent}"),
+            HumanMessage(f"Handed over by: {h['from'] or waiting}\nPM's request: {h['quote']}")])
         return {"handoff": {**h, "kind": r.kind, "target": r.target, "answer": r.answer}}
 
     def guard(s):
-        h, approved, change = s["handoff"], s["approved"], s.get("change")
+        h, approved, change, resume = s["handoff"], s["approved"], s.get("change"), s.get("resume")
         src, target, quote = h["from"], h.get("target"), h["quote"]
+        again = (f"\n\nAnything else you'd like to change or ask before we go back to the "
+                 f"{STEPS[resume['step']].title.lower()}?" if resume and not src else "")
+        if resume and not src and (h.get("kind") == "continue" or target == resume["step"]):  # go on with the paused part
+            wish = f'\nThe PM also said: "{quote}". Take it into account.' if h.get("kind") != "continue" else ""
+            return {"handoff": None, "resume": None, "step": resume["step"], "mode": "build",
+                    "note": note(resume["note"] + wish)}
+        if h.get("kind") == "continue":  # nothing paused: nothing to continue
+            return {"handoff": None, "step": None, "notice": None}
         if h.get("kind") == "question" and h.get("answer"):  # answered: nothing is changed, reviewed or saved
             if src:
                 back = {"handoff": None, "step": src, "log": [{"step": src, "role": "assistant", "text": h["answer"]}]}
@@ -169,34 +192,36 @@ def build(llm, db, checkpointer):
                                              f'"{h["answer"]}". Do not comment on it, thank them or repeat it: '
                                              "continue your part where you left off, as if the conversation had not "
                                              "paused.")}
-            return {"handoff": None, "step": None, "notice": h["answer"]}
-        back_to = src if src and src not in approved else None
+            return {"handoff": None, "step": None, "notice": h["answer"] + again}
+        back_to = src if src and src not in approved else (resume["step"] if resume and not src else None)
         if change and s.get("mode") == "change" and src == change["origin"]:  # the change was misrouted: send it on
             change, back_to = None, change["back_to"]
 
-        def refuse(for_agent, for_pm=""):
+        def refuse(for_agent, for_pm="", ask_again=True):
             if src:
                 return {"handoff": None, "step": src, "note": note(f'The PM wrote: "{quote}". {for_agent}')}
-            return {"handoff": None, "step": None, "notice": for_pm}
+            return {"handoff": None, "step": None, "notice": for_pm + (again if ask_again else "")}
 
         if target is None or h.get("kind") != "change":
             return refuse("It is not clear which part of the plan this is about: ask the PM one short question.",
-                          "I could not tell which part of the plan that is about. Which part should change?")
+                          h.get("answer") or "I'm not sure what you'd like to change. Could you say it in other words?",
+                          ask_again=False)
         if target == src:
             return refuse("This is for your part after all: handle it.")  # target == src implies src is an agent
         if target not in approved:
-            return refuse(f"That belongs to {STEPS[target].title}, which is not written yet, so it cannot be changed "
-                          "now. Tell the PM plainly.", f"{STEPS[target].title} is not written yet.")
+            return refuse(f"That is about the {STEPS[target].title.lower()}, which you and the PM have not reached yet, so "
+                          "it cannot be changed now. Tell them so plainly, about their project.",
+                          f"We haven't written the {STEPS[target].title.lower()} yet, so there is nothing there to change.")
         if change:
             return refuse("Another change is still being applied. Tell the PM to ask again when it is done.",
-                          "Another change is still being applied. Ask again when it is done.")
-        return {"handoff": None, "reviewing": None, "step": target, "mode": "change", "fresh": True,
+                          "I'm still working on your previous change. Please ask again once it's done.")
+        return {"handoff": None, "reviewing": None, "resume": None, "step": target, "mode": "change", "fresh": True,
                 "note": HumanMessage(quote, name="handoff"),
                 "change": {"origin": target, "request": quote, "to_check": [], "back_to": back_to}}
 
     def idle(s):
-        text = s.get("notice") or ("Every part of the plan is approved. Tell me what should change, or what "
-                                   "happened (for example: sprint 1 is finished).")
+        text = s.get("notice") or ("Your plan is complete: the project idea, requirements, user stories and acceptance "
+                                   "criteria are all agreed. Tell me anything you'd like to change.")
         answer = interrupt({"type": "idle", "text": text})
         return {"notice": None, "handoff": {"from": None, "quote": answer, "target": None},
                 "log": [{"step": None, "role": "assistant", "text": text}, {"step": None, "role": "user", "text": answer}]}
@@ -219,24 +244,3 @@ def build(llm, db, checkpointer):
     g.add_conditional_edges("guard", back_to_review, ["review", *ORDER, "idle"])
     g.add_edge("idle", "router")
     return g.compile(checkpointer=checkpointer)
-
-
-async def open_graph():
-    """Connect to DeepSeek and Supabase and build the graph. Its progress is saved in Supabase (schema langgraph)."""
-    llm = ChatDeepSeek(model=os.environ.get("PLANNING_MODEL", "deepseek-chat"), api_key=os.environ["DEEPSEEK_API_KEY"],
-                       temperature=0, max_tokens=8192, timeout=180, max_retries=3)
-    db = await acreate_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_ROLE_KEY"])
-
-    async def use_langgraph_schema(conn):
-        await conn.execute("set search_path to langgraph")
-
-    # Long model calls leave connections idle for minutes and Supabase's pooler may close them: test each connection
-    # before use, drop idle ones early, and keep the TCP connection alive.
-    pool = AsyncConnectionPool(os.environ["SUPABASE_DB_URL"], open=False, configure=use_langgraph_schema,
-                               check=AsyncConnectionPool.check_connection, max_idle=60,
-                               kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row,
-                                       "keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10})
-    await pool.open()
-    saver = AsyncPostgresSaver(pool)
-    await saver.setup()
-    return build(llm, db, saver)

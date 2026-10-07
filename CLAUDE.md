@@ -1,13 +1,13 @@
 # Planning App — rules for Claude
 
-Graduation project: six planning agents (discovery → requirements → stories → criteria → sprint → assignments)
+Graduation project: four planning agents (discovery → requirements → stories → criteria)
 under one routing main agent, built with LangGraph, DeepSeek, Supabase and Streamlit. Local only.
 
-- New code lives in `planning_app/`. The plan is `planning_app/PLAN.md`: follow its phases in order.
-- `planning_app/LATER.md` lists ideas already discussed with the user but not built yet. Read it before changing
-  the checks, the review screen or the sprint logic.
-- `planning_app/JIRA.md` holds the Jira integration plan (decided, built in phases, not built yet). Read it before
-  any Jira work.
+- New code lives in `planning_app/`: the phase itself is the self-contained package `planning_app/planning/` (code,
+  prompts, `schema.sql`; it moves into the web platform later), `app.py` is the Streamlit test screen, notes are in
+  `planning_app/docs/`. The plan is `docs/PLAN.md`: follow its phases in order.
+- `planning_app/docs/LATER.md` lists ideas already discussed with the user but not built yet. Read it before changing
+  the checks or the review screen.
 - Out of scope for now: tests, tooling (lint/CI/pre-commit), hosting, login.
 - Replies to the user: very simple, everyday words. End every change with a list of what changed.
 

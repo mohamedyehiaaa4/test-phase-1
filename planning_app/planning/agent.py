@@ -12,13 +12,14 @@ import copy
 import json
 from typing import Annotated, TypedDict
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import interrupt
 from pydantic import BaseModel, Field, ValidationError
 
-from steps import STEPS, bad_refs, earlier, keys_in
+from .messages import answer_broken, chat_of, without_old_tool_traffic
+from .steps import STEPS, bad_refs, earlier, keys_in
 
 
 class AgentState(TypedDict, total=False):
@@ -28,6 +29,7 @@ class AgentState(TypedDict, total=False):
     approved: dict                             # approved drafts by step (input from the main graph)
     summaries: dict                            # short summary of each approved step (input from the main graph)
     outcome: dict | None
+    submitted: dict | None                     # the last work sent for review: {report, summary, draft}
 
 
 class Submit(BaseModel):
@@ -46,6 +48,11 @@ class NotMyJob(BaseModel):
 class NoImpact(BaseModel):
     """Only while checking a change to earlier work: your approved work is not affected. Changes nothing."""
     reason: str = Field(min_length=8, description="Why the change does not affect your work")
+
+
+class Answered(BaseModel):
+    """Only after the PM answered your review with a message: it was only a question, you answered it, and your work
+    is unchanged. The same work goes back to them for approval. This ends your turn."""
 
 
 class ReadApproved(BaseModel):
@@ -74,15 +81,6 @@ def tool(name, model, description=None):
         "name": name, "description": description or model.__doc__, "parameters": model.model_json_schema()}}
 
 
-def chat_of(messages):
-    """What the PM sees: the agent's plain replies and the PM's own messages. Named messages (notes, review
-    feedback, handed-over requests) and tool traffic are hidden: the main chat shows those once, elsewhere."""
-    return [{"role": "assistant" if isinstance(m, AIMessage) else "user", "text": m.content}
-            for m in messages
-            if (isinstance(m, AIMessage) and not m.tool_calls and m.content)
-            or (isinstance(m, HumanMessage) and not m.name)]
-
-
 def context_for(step, approved, summaries):
     """Earlier approved work: short summaries of all of it, and the steps this one builds on in full."""
     before = [s for s in earlier(step) if s in approved]
@@ -97,41 +95,13 @@ def context_for(step, approved, summaries):
     return "\n".join(lines)
 
 
-def without_old_tool_traffic(messages):
-    """What the model is sent: every message between PM and agent, plus tool calls and results of the current turn
-    only (since the last PM message or note). Older calls go out together with their results; the draft shown every
-    turn already holds what they did. The saved chat itself stays complete."""
-    turn = max((i for i, m in enumerate(messages) if isinstance(m, HumanMessage)), default=-1)
-    out = []
-    for i, m in enumerate(messages):
-        if i > turn or isinstance(m, HumanMessage):
-            out.append(m)
-        elif isinstance(m, AIMessage) and m.content and not (m.tool_calls or m.invalid_tool_calls):
-            out.append(m)
-        elif isinstance(m, AIMessage) and m.content:
-            out.append(AIMessage(m.content))  # keep its words, drop its old tool calls
-    return out
-
-
-def answer_broken(messages):
-    """Every tool call needs an answer or the API rejects the whole chat. A call with broken arguments (for example
-    cut off at the output limit) sits in invalid_tool_calls, which no tool runs, so answer it here."""
-    out = []
-    for m in messages:
-        out.append(m)
-        if isinstance(m, AIMessage):
-            out += [ToolMessage("Not done: the arguments of this call were broken. Send it again.", tool_call_id=c["id"])
-                    for c in m.invalid_tool_calls if c.get("id")]
-    return out
-
-
 def build_agent(name, llm):
     step = STEPS[name]
     saves = {f"save_{m.__name__.lower()}": m for m in step.items}
     removes = {f"remove_{m.__name__.lower()}": m for m in step.items if not m.single}
     tools = [tool(n, m) for n, m in saves.items()]
     tools += [tool(n, Remove, f"Remove a {m.__name__.lower()} by its key.") for n, m in removes.items()]
-    tools += [tool("submit", Submit), tool("not_my_job", NotMyJob)]
+    tools += [tool("submit", Submit), tool("not_my_job", NotMyJob), tool("answered", Answered)]
     if earlier(name):
         tools.append(tool("read_approved", ReadApproved))
     with_tools = {"build": llm.bind_tools(tools), "change": llm.bind_tools(tools + [tool("no_impact", NoImpact)]),
@@ -193,6 +163,12 @@ def build_agent(name, llm):
             return "Sent for review.", {"kind": "submit", "report": a.report, "summary": a.summary}
         if n == "not_my_job":
             return "Handed over.", {"kind": "handoff", "quote": NotMyJob.model_validate(args).quote}
+        if n == "answered":
+            last = next((m for m in reversed(state["messages"]) if isinstance(m, HumanMessage) and m.name != "note"), None)
+            sent = state.get("submitted")
+            if not (last is not None and last.name == "review" and sent and draft == sent["draft"]):
+                raise ValueError("only right after the PM answered your review, when your work is unchanged")
+            return "The same work goes back to the PM.", {k: sent[k] for k in ("kind", "report", "summary")}
         if n == "no_impact" and state["mode"] in ("change", "check"):
             NoImpact.model_validate(args)
             if draft != state["approved"].get(name):
@@ -209,9 +185,7 @@ def build_agent(name, llm):
             step.prompt, f"# Other parts of the plan (not yours)\n{others}",
             context_for(name, state["approved"], state.get("summaries") or {}),
             MODE_NOTES[state["mode"]],
-            "# Your current draft\n" + json.dumps(state.get("draft") or {}, ensure_ascii=False, indent=1),
-            step.numbers and "# Numbers computed by code (use these; never count or add them yourself)\n"
-            + step.numbers(state.get("draft") or {}, state["approved"])]))
+            "# Your current draft\n" + json.dumps(state.get("draft") or {}, ensure_ascii=False, indent=1)]))
         sent = answer_broken(without_old_tool_traffic(state["messages"]))
         reply = await with_tools[state["mode"]].ainvoke([SystemMessage(system), *sent])
         return {"messages": [reply]}
@@ -227,12 +201,41 @@ def build_agent(name, llm):
                 except (ValidationError, ValueError) as e:
                     text = f"Not done: {e}"
             replies.append(ToolMessage(text, tool_call_id=call["id"]))
-        return {"draft": draft, "messages": replies, "outcome": outcome}
+        update = {"draft": draft, "messages": replies, "outcome": outcome}
+        if outcome and outcome["kind"] == "submit":
+            update["submitted"] = {**outcome, "draft": copy.deepcopy(draft)}
+        return update
 
     def pm(state):
         text = state["messages"][-1].content
         if not text.strip():
             return {"messages": [HumanMessage("Reply to the PM in plain text or call a tool.", name="note")]}
+        # A plain reply to review feedback or to a change request never leaves the PM without the Approve button, and
+        # never hides an unhandled request. Review feedback with the work unchanged: the agent must name what it did
+        # with an action (answered, or not_my_job), because its words alone may claim a hand-over it never made.
+        # Whenever the work changed (since that review, or since the approved version): the agent must send it now.
+        last = next((m for m in reversed(state["messages"]) if isinstance(m, HumanMessage)), None)
+        sent = state.get("submitted")
+        if last is not None and last.name in ("review", "handoff"):
+            if last.name == "review" and sent and state.get("draft") == sent["draft"]:  # decided by an action, not words
+                return {"messages": [HumanMessage(
+                    "The PM's last message is still open. If it asks for anything outside your own work, call "
+                    "not_my_job now: saying it is passed on does not pass it on. If it was only a question and you "
+                    "answered it, call answered.", name="note")]}
+            base = sent["draft"] if last.name == "review" and sent else state["approved"].get(name)
+            if state.get("draft") != base:
+                return {"messages": [HumanMessage("Your work changed: send it for review now with submit. Do not ask "
+                                                  "the PM first.", name="note")]}
+        # Finished work reaches the PM only as a review: the agent saved work this turn that is now complete and not yet
+        # sent, then wrote it into the chat instead of submitting. Read from the state, never from the reply's words.
+        since = max((i for i, m in enumerate(state["messages"]) if isinstance(m, HumanMessage)), default=-1)
+        saved_now = any(c["name"].startswith(("save_", "remove_"))
+                        for m in state["messages"][since + 1:] for c in getattr(m, "tool_calls", None) or [])
+        draft = state.get("draft") or {}
+        if saved_now and draft != (sent["draft"] if sent else state["approved"].get(name)) \
+                and not step.check(draft, state["approved"]) and not dangling(state, draft):
+            return {"messages": [HumanMessage("Your work is complete: send it for review now with submit instead of "
+                                              "writing it into the chat.", name="note")]}
         answer = interrupt({"type": "question", "step": name, "chat": chat_of(state["messages"])})
         return {"messages": [HumanMessage(answer)]}
 

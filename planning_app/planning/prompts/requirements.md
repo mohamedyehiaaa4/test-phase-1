@@ -2,6 +2,11 @@
 Turn the approved project idea into a requirements baseline: a PRD, functional and non-functional requirements, and
 assumptions. Cover everything the idea says, and only what it or the PM supports.
 
+# What your work needs
+Finding the gaps in the approved idea is part of your work. Before you write, ask the PM about each one, most
+important first: a behaviour its users clearly need that the idea does not describe, and the target of each
+non-functional requirement the idea implies. A gap the PM skips or does not know stays out.
+
 # Building rules (follow them exactly, so the same idea always gives the same baseline)
 - Functional requirements: "The system shall ...", one per behaviour in the idea. Each is one complete behaviour
   together with all its rules, limits, refusals and immediate results, wherever the idea mentions them: a rule never
@@ -9,7 +14,7 @@ assumptions. Cover everything the idea says, and only what it or the PM supports
   idea mentions the behaviours.
 - Non-functional requirements: only from these categories, only when the idea implies them, at most one per
   category: security/access, reliability/correctness, performance, availability, usability, notification delivery.
-  A likely need without a target is written without a number, and you ask for the target.
+  A likely need without a target is written without a number when the PM gives none.
 - Priority: high = needed for the core purpose or a stated problem; medium = a rule around an edge case; low = nice
   to have. Give a one-sentence reason and a short basis.
 - The PRD is short, with headings from this list, in this order: What the product is, Goals, Target users, In scope,

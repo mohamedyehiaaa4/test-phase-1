@@ -28,10 +28,10 @@ agent's judgment, following the prompt rules; the PM sees it at review.
 
 ## Removed the regex check on the report text
 
-**Problem.** On submit, the code searched the agent's report with a regex for every item key (FR1, S3, SP1, M1…)
+**Problem.** On submit, the code searched the agent's report with a regex for every item key (FR1, S3, C1…)
 and refused the report if one was missing. It only proved that keys appear in the text, not that the report is
 true. In all saved test chats it fired 5 times in 28 reports, and all 5 were false alarms: the report showed the
-item but wrote "Sprint 1" instead of "SP1", or the team members' names instead of "M1, M2, M3".
+item but wrote it by its name instead of its key.
 
 **Options discussed.** A: keep as is. B: code shows the saved draft as tables + a short agent message. C: keep the
 agent's report, delete the regex. D: report + a "saved items" section under it. B and D were rejected: the PM must
@@ -46,60 +46,32 @@ feel they talk to one assistant, so the app must not show the machinery (drafts,
 | `steps.py` | Deleted `missing_from` and `import re` (nothing else used it). |
 
 **What still checks on submit (all agents):** the step's own done check, and that every link points to an item that
-exists. **What still checks on save:** key formats (`FR1`, `S1`, `C1`, `E1`, `T1`, `SP1`, `M1`, `A1` via the
+exists. **What still checks on save:** key formats (`FR1`, `S1`, `C1`, `A1` via the
 `pattern=` on each item's `key` field), required fields and allowed values.
 
 **Checked.** Nothing uses the removed code; the full flow works.
 
 ---
 
-## Sprint arithmetic in code
+## Agents see the earlier steps they build on in full
 
-**Problem.** The sprint agent added story points in its head and compared them with the capacity (models make
-arithmetic mistakes). It did not see the story points automatically: only the criteria were shown in full, and it
-had to remember to read the stories. The capacity was free text ("20 points", "about 20"), so code could not
-calculate with it.
-
-**Decision.** The agent still decides what goes in the sprint; the PM approves. Code makes sure the agent has the
-right data and the right numbers. The numbers are shown to the agent only (not as a separate box for the PM).
+**Problem.** An agent saw only the step right before it in full and had to remember to read the others.
 
 **Changes.**
-| Part | File | Change |
-|---|---|---|
-| A. See the stories | `steps.py` — `Step` | New field `builds_on`: the earlier steps shown to the agent in full. Requirements: discovery. Stories: requirements. Criteria: stories. **Sprint: stories + criteria.** **Assignments: sprint + stories.** |
-| | `agent.py` — `context_for` | Shows every step in `builds_on` in full, instead of only the step right before. Short summaries of all earlier steps stay. |
-| B. Capacity as a number | `steps.py` — `Sprint` | `capacity: str` → `capacity: float \| None` (≥ 0; empty if unknown; "about 20" is 20; anything else goes in notes). Text like "20 points" is refused when saving. |
-| | `schema.sql` + live database | `sprints.capacity` text → `numeric`, nullable, `check (capacity >= 0)`. `save_step` saves it as a number. The table was empty, so no conversion was needed. |
-| C. Numbers computed by code | `steps.py` | New `sprint_numbers(draft, approved)`: for every sprint, its stories with points, the total against the capacity, "OVER CAPACITY by N", stories with no points, stories only partly in the sprint; plus the backlog total. New `Step` field `numbers`, set only on the sprint step. |
-| | `agent.py` — `model` node | When the step has `numbers`, the result is added under the agent's draft every turn: "# Sprint numbers (computed by code: use these, never add points yourself)". Not a tool: it is always there. |
-| D. Sprint prompt | `prompts/sprint.md` | Removed "Do the arithmetic before you report…". Added: use the computed numbers, never add points yourself, report the total and capacity from them, and say plainly when over capacity, a story has no points, or a story is only partly in the sprint. The capacity is saved as a number (extra words in notes). The report shows "the computed total against the capacity". |
-
-**Checked.**
-- Database round trip (rolled back): capacity 20 saved and loaded as 20; unknown capacity as empty.
-- `sprint_numbers` on run F's real plan: "S1 (3), S2 (3), S4 (3), S6 (3) = 12 points of capacity 20" — the same as the
-  agent's own report in the test. Hard cases: over capacity, a story with no points, a story split over two sprints
-  are all reported.
-- The sprint agent now sees "User stories" and "Acceptance criteria" in full.
-- A text capacity ("20 points") is refused; the full flow works.
+| File | Change |
+|---|---|
+| `steps.py` — `Step` | New field `builds_on`: the earlier steps shown to the agent in full. Requirements: discovery. Stories: requirements. Criteria: stories. |
+| `agent.py` — `context_for` | Shows every step in `builds_on` in full, instead of only the step right before. Short summaries of all earlier steps stay. |
 
 ---
 
-## Stale reasons in related items (options A + C)
+## Stale reasons in related items
 
-**Problem.** Reasons were snapshots: T15's reason said "Ahmed already carries T1, T2, T4, T6, T7 and T9"; after the PM
-moved T9 to Omar, the data was right but T15's reason was out of date. The agent updates the item it changes, not
-other items whose text mentions it.
+**Problem.** Reasons were snapshots: when an item changed, another item whose text mentioned it kept describing the
+old state. The agent updates the item it changes, not other items whose text mentions it.
 
-**Changes.**
-| Option | File | Change |
-|---|---|---|
-| A. Rule for all agents | `prompts/rules.md` | "When you change an item, also update every other item whose text mentions it (a reason, a description), so no text still describes the old state." |
-| C. Remove the cause | `steps.py` | New `team_load(draft, approved)`: each member's tasks as main owner and as helper in the running sprint, plus tasks with no owner. Set as `numbers` on the assignments step. `Assignment.rationale`: "about this task only … never counts or lists of other tasks". |
-| | `agent.py` | The computed-numbers header is now general: "# Numbers computed by code (use these; never count or add them yourself)". |
-| | `prompts/assignments.md` | Use the computed load, never count yourself; a reason talks about its own task only, never counts or lists of other tasks. |
-
-**Checked.** The T9 case: before, "Ahmed: 2 (T1, T9)"; after moving T9, "Ahmed: 1 (T1), helping on T9" and "Omar: 2 (T9,
-T15)". Works with no approved sprint yet. Syntax and full flow pass.
+**Change.** `prompts/rules.md` (all agents): "When you change an item, also update every other item whose text mentions
+it (a reason, a description), so no text still describes the old state."
 
 ---
 
@@ -126,19 +98,15 @@ done.
 
 ---
 
-## Code review — 2 bugs fixed
+## Code review — a bug fixed
 
-**Bug 1 — feedback during a change wiped the agent's edits** (`graph.py`). `step_node` reset the agent's draft to the
+**Feedback during a change wiped the agent's edits** (`graph.py`). `step_node` reset the agent's draft to the
 approved version every time the step ran in change or check mode, not only when the change started. So PM feedback
 during a change (or a save failure, or a check round) threw away the agent's edits, and the PM could approve the old
 version while the report described the new one. Fix: a new state flag `fresh`, set to True only where a change starts
 (the guard) and where a check starts (`load`); the step node resets the draft only when `fresh` is set, then clears it.
 Proven before/after with a test: after feedback the draft about to be approved was "v1" (edit lost); now it is
 "v2 EDITED", and that is what gets saved as version 2.
-
-**Bug 2 — an unassigned task crashed the assignments step** (`steps.py`, `team_load`, added for stale reasons). A task left
-unassigned on purpose has `member_keys = []`, and `[][0]` raised `IndexError` on every turn. Fix: `(decided.get(t) or
-[None])[0]`; the load now shows "Not decided yet" and "Left unassigned" separately. Proven before/after with a test.
 
 ---
 
@@ -162,9 +130,8 @@ read-only Q&A agent (a former LATER.md idea). 3: the owning agent answers in a n
 | `prompts/router.md` | Rewritten: decide change / question / unclear (a change phrased as a question is a change; a mixed message is a change; when unsure between change and question, choose question); for a change pick the earliest part as before; for a question answer short and plain only from the approved content, never invent, never mention parts or the system. |
 
 **Checked.** Fake model: a question during a step → answer in the chat, back at that agent, no change, no save; a question
-while idle → answer shown, no new version. Live (real model, project "FULL TEST 2"): "which stories are still in the
-backlog?" → "S5, S11 and S12 are not in any sprint yet"; "can members book 14 days ahead or 7?" → "14 days"; saved
-versions unchanged after both. The flow check still passes.
+while idle → answer shown, no new version. Live (real model, project "FULL TEST 2"): "can members book 14 days ahead
+or 7?" → "14 days"; saved versions unchanged. The flow check still passes.
 
 ---
 
@@ -259,38 +226,6 @@ it, in the format they ask for (for example a table)".
 
 ---
 
-## Sprint selection rule: dependencies first
-
-**Sprint selection rule** (`prompts/sprint.md`). The old rule ("add each story whose dependencies are met; skip what
-does not fit") let a needed story come later in the order, so two runs made two different wrong plans (one without
-booking, one without class setup). New rule: before adding a story, first add the stories it depends on (and what
-they depend on), count them all toward the capacity, and skip them together if they do not fit; never add a story
-without its dependencies.
-
----
-
-## Assignments refused advice; sprint tasks were only backend/frontend (found in the PM's run)
-
-**Problems.** (1) The PM asked "can you recommend me the team roles I should have?"; the assignments agent refused
-("that's not mine to decide … I only assign the sprint's tasks"), reading its rule "never invent people, roles…" as
-"never suggest". (2) For an AI-agent project, sprint 1 had no AI and no testing tasks, so the AI engineer and the tester
-got nothing and the web-search task went to the database architect. Cause: our own sprint rule "one backend task and
-one frontend task per story", written with a normal web app in mind.
-
-**Changes (prompts only).**
-| File | Change |
-|---|---|
-| `prompts/assignments.md` | New: "When the PM asks for advice (for example which roles the project needs), give a clear suggestion based on the planned work, marked as a suggestion. Never add a person or role to the team unless the PM confirms it." |
-| `prompts/sprint.md` | "one backend task and one frontend task per story" → "one task for each kind of work the story really needs (for example backend, frontend, AI/ML, data, testing), each with that kind as its work type. A story that needs testing gets a testing task." |
-
-**Follow-up (PM asked).** Suggested roles should be specific, not only backend/frontend. Added to the advice rule in
-`prompts/assignments.md`: "Suggest specific roles named after the real work in this project's tasks (for example 'LLM /
-prompt engineer', 'search and data integration developer', 'QA tester'), each with the tasks it would cover, never only
-broad roles such as backend or frontend developer." (A first try that made sprint task work types very specific was
-undone: the PM meant the suggested roles, not the tasks.)
-
----
-
 ## Prompt cleanup (same rules, clearer structure)
 
 Every prompt rewritten with the same structure: who you are / your part, Start, Building rules, Report (the shared
@@ -301,8 +236,8 @@ strong wording of the heading rule stays. About 12% fewer words (3043 -> 2676).
 
 Tested on a full run (AI study advisor): discovery, requirements, stories and criteria behaved as before or better
 (one question per message, no system talk, empty headings left out, table format kept, key order kept). That run also
-had the groundwork rules (see "Tried and undone"); the final stories and sprint prompts (the same rules as before the
-cleanup, reworded) have not been run since.
+had the groundwork rules (see "Tried and undone"); the final stories prompt (the same rules as before the cleanup,
+reworded) has not been run since.
 
 ---
 
@@ -343,8 +278,7 @@ rewrites exactly that one.
 ## Agents open by saying what they will do; prompts describe the job, not the questions
 
 **Problem.** Each agent's "Start" section scripted its opening questions ("ask whether the PM has recommendations or
-you should go on your own", "ask who the users are and how big a story should be", "ask the length, then the
-capacity, then the dependencies"). In a live run the stories agent opened with "I have the requirements in front of
+you should go on your own", "ask who the users are and how big a story should be"). In a live run the stories agent opened with "I have the requirements in front of
 me; the project idea summary is enough for the user role" and then still asked who the users are. The PM's rule:
 a prompt tells the agent its job, never which questions to ask.
 
@@ -354,8 +288,6 @@ a prompt tells the agent its job, never which questions to ask.
 | `prompts/rules.md` (all agents) | New first rule: "Your first message in your part says, in a few sentences and in the project's own words, what you will do for this project. Get from the PM only what your work needs and the approved work does not already answer, one question at a time. Write nothing before the PM has answered your first message." |
 | `prompts/requirements.md`, `prompts/criteria.md` | "Start" section removed (the shared rule covers it). |
 | `prompts/stories.md` | "Start" → "What your work needs": story points in the PM's own scale (the agent proposes, the PM corrects). |
-| `prompts/sprint.md` | "Start" → "What your work needs": the sprint length (never assumed), the capacity if known, which stories depend on others; capacity saved as a number. |
-| `prompts/assignments.md` | "Start" → "What your work needs": the current team, names and roles in the PM's words; an earlier team may have changed. |
 
 Not tested in a live run yet. Prompts are read every turn, so the running app uses them at once.
 
@@ -423,51 +355,17 @@ a plain chat message instead of calling submit, so the PM saw no Approve button 
 | `review` | On a message: remembers that work in `reviewing`; on Approve: clears it. |
 | `step_node` | Clears `reviewing` unless the agent only handed the message on without touching its draft (an edited draft makes that review out of date). |
 | `guard` (question branch) | If `reviewing` is set: logs the answer and goes straight back to `review` with the same work, with no agent run and no AI call. Otherwise as before. A change that starts clears `reviewing`. |
-| `back_to` note (after a change) | "…then continue (if your work was complete, submit it again). Do not tell the PM about this update or your draft: just continue." (The sprint agent had echoed the note: "The freeze limit change is already reflected in my input … nothing in my draft needs adjusting".) |
+| `back_to` note (after a change) | "…then continue (if your work was complete, submit it again). Do not tell the PM about this update or your draft: just continue." |
 
 **Checked** with a fake model: a question at review → the answer, then the same review with Approve, with no AI call;
 feedback the agent acts on, then a question → the agent continues (the old review is not reused).
 
 ---
 
-## Detailed tasks, and no fixed job labels in the prompts
-
-**Problems (PM, gym run).** (1) Tasks were too general to build a real system: "one task per kind of work" gave one
-vague task per layer. (2) The prompts named fixed job labels (backend, frontend, AI/ML, data, testing; "a full-stack
-developer covers frontend and backend"; "LLM / prompt engineer"), so the agents sorted work into those boxes instead
-of the project's own terms.
-
-**Changes.**
-| File | Change |
-|---|---|
-| `prompts/sprint.md` | Task rule now describes the job: break each selected story into the concrete pieces of work needed to really build it and make its acceptance criteria pass, each small enough for one person; the title says exactly what gets built; the description gives what to build, the rules it must enforce and the acceptance criteria (by key) it serves; the work type names the skill in this project's own terms; checking the acceptance criteria is part of the work. |
-| `prompts/assignments.md` | "pick people whose role covers the skill it needs … the way a real team lead would" (the full-stack example removed); advice: "roles named after the real work in this project's tasks, as specific as that work" (the example role names removed). |
-| `prompts/stories.md`, `steps.py` — `Story.points` | "3 = one screen or one backend action" → "3 = one complete action". |
-| `steps.py` — `Task` | `description` now asks for what to build, the rules and the acceptance criteria keys; `work_type`: "The skill it needs, in this project's own terms". |
-
-Not tested in a live run yet; the running gym project's sprint is not planned yet, so it will use the new rule.
-
----
-
-## Roles as specific as real job titles (no examples in the prompts)
-
-**Problem (PM, gym run).** After the label-free rewrite the sprint agent still wrote broad work types such as "front
-end development". The PM wants the specialist role that would really do the task, at the level of a job title on a
-real team — and no example roles in the prompts.
-
-**Changes (no examples anywhere).**
-| File | Change |
-|---|---|
-| `prompts/sprint.md` | The task's work type "names the specialist role that would really do it, as specific as a job title on a real team and never a broad area of the system, chosen from what this task actually involves". |
-| `prompts/assignments.md` | Each task: "name the specialist role it needs, as specific as a job title on a real team and never a broad area of the system"; advice: "roles as specific as job titles on a real team, named after the real work in this project's tasks". |
-| `steps.py` | `Task.work_type` and `Assignment.required_role` descriptions say the same. |
-
----
-
 ## Fixes from the full test run (dental clinic project)
 
-A full run as the PM (all six agents, a change chain 24 → 48 hours, two sprints) confirmed the earlier fixes and found
-eight smaller issues. All fixed in the prompts (no examples or job labels added):
+A full run as the PM (all agents, a change chain 24 → 48 hours) confirmed the earlier fixes and found smaller
+issues. All fixed in the prompts (no examples or job labels added):
 | # | Found | Fix |
 |---|---|---|
 | 1 | Stories answered a question about the requirements itself instead of handing it on | `rules.md`: answering a question about another part is showing it: call not_my_job "even when you can see the answer" |
@@ -476,10 +374,6 @@ eight smaller issues. All fixed in the prompts (no examples or job labels added)
 | 4 | The stories summary repeated "30-day" | `rules.md` + `Submit.summary`: never repeat facts, **numbers or names** that belong to earlier parts |
 | 5 | Criteria asked again for a target the PM had already declined | `criteria.md`: a requirement without a number is settled as it is; write an observable condition and never ask for a target |
 | 6 | Discovery wrote "Out of scope: nothing was said" | `discovery.md`: never write that a heading is empty or was not discussed: leave it out |
-| 7 | Roles were job titles but broad (named after a layer of the system) | `sprint.md`, `assignments.md`, `Task.work_type`: the narrowest specialist role that would own the task, named after its particular technology or concern; a role named only after a layer or side of the system is too broad |
-| 8 | Unbalanced load (7 vs 1): a role spanning several areas was not counted for all of them | `assignments.md`: a person's role covers every kind of work its title includes; count them among the candidates for all of them |
-
-Known and unchanged: a partly done story still counts its full points (LATER.md point 4).
 
 ---
 
@@ -496,9 +390,6 @@ code = facts about the data; agent = decides how to fix; PM = judges the meaning
 **No smarter stop for repeated refused calls (former point 8).** Not needed today: 0 loops in 524 tool calls; the
 graph's step limit and the app's "Try again" (no data lost) are the safety net.
 
-**Task given to someone without the skill (finding #6).** Accepted as is: the agent picked the closest fit and said
-so openly; the PM decides at review and a PM choice is recorded at once.
-
 **Router and Q&A ideas (former point 9, items 1–2).** The router now sees the full approved content (wrong-part
 routing fixed in the clearer-rules round) and answers questions itself (see "Full test problem 1" above), so a
 separate Q&A agent is not needed now.
@@ -510,24 +401,208 @@ separate Q&A agent is not needed now.
 All built, then undone together at the PM's request ("this makes many problems"); code, prompts and the live database
 went back to the pushed version. A copy of the removed files was kept outside the project.
 
-- **Groundwork in the plan** (the problem stays open as `LATER.md` point 1). First as separate groundwork stories ("As
+- **Groundwork in the plan**. First as separate groundwork stories ("As
   the development team, we need…"), then, by the PM's choice, the strict Scrum way: a groundwork task inside the first
   story that needs it. To close the gap that story points were set before groundwork was known, option B: the stories
-  step includes the groundwork in the points of the first story that needs it (by priority, then key), and the sprint
-  puts the task in that same story.
-- **Epics moved from the sprint step to the stories step** (an epic is an area of the product, not part of a sprint;
-  Jira needs epics before stories). `Epic` moved to the stories step with a check "S5 in no epic", and `save_step` /
-  `load_step` saved and loaded epics with the stories. Tested on the live database (rolled back), then undone; the
-  live functions are back to the old version.
-- **"Work done by an AI model is AI work, not backend"** in the sprint task rule.
+  step includes the groundwork in the points of the first story that needs it (by priority, then key).
 
 **What the test run showed** (prompt cleanup plus the rules above, AI study advisor):
 - Groundwork was missed ("no shared piece needed") until the rule became an explicit step ("before you set points,
   list what must already exist for the stories to work…"); then the agent was found (with web search) in S3 and a
   data store in S6, with S3's points raised to 5. Small slips: S2 needed the agent first; login was called groundwork
   although S9 is the login story.
-- The sprint went over capacity: 32 points of 20, and 24 after "keep a running total". Earlier runs without these rules
-  always stayed within capacity (18, 19, 12 and 18 of 20), so it was put down to the groundwork rules (bigger points,
-  a longer prompt); a note on this is in `LATER.md` point 1.
-- Epics were made in the stories step as intended.
 
+---
+
+## Removed sprint planning and task assignments from this phase
+
+**Decision (PM).** This phase plans only what gets built: project idea → requirements → user stories → acceptance
+criteria. Sprint planning and task assignments leave it (they belong to a later phase, built its own way).
+
+**Changes.**
+| File | Change |
+|---|---|
+| `items.py`, `checks.py`, `steps.py` | Removed the epic, task, sprint, member and assignment items, their done checks, the computed sprint and team numbers, and the two steps. The `Step.numbers` option (only those two steps used it) is gone too. |
+| `agent.py` | No more "numbers computed by code" section under the draft. |
+| `graph.py` | The final message is "Every part of the plan is approved. Tell me what should change." |
+| `prompts/` | `sprint.md` and `assignments.md` deleted; the sprint and team examples removed from `router.md`. |
+| `schema.sql` + live database | The 9 sprint and assignment tables dropped (they were empty); steps limited to the four; `save_step` / `load_step` without the two branches; server-only access kept. |
+| Notes | `JIRA.md` deleted; sprint parts removed from `DECISIONS.md`, `LATER.md`, `PLAN.md`, `CLAUDE.md` and this file. |
+
+---
+
+## Clearer file layout
+
+**Why.** All code, prompts, the database file and the notes sat in one flat folder.
+
+**Now.** `planning/` holds the whole phase and nothing else (code, `prompts/`, `schema.sql`), as a Python package with
+package imports (`from .steps import …`), so it can be copied into the web platform as is. `app.py` (the Streamlit test
+screen) and `requirements.txt` stay at the top; the notes moved to `docs/`. The file map is in `PLAN.md`. Run the app
+as before, from `planning_app/`: `streamlit run app.py`.
+
+---
+
+## The Approve button no longer disappears after a reply at review
+
+**Problem (library test run, 3 of 3 times).** When the PM answered a review with a message, the agent sometimes just
+replied in text ("Six rules", the FR table it was asked to show, "Done … Shall I submit it for your review?") without
+sending its work again, so the PM was left with no Approve button. The earlier fix only covered questions answered by
+the main agent.
+
+**Change (code, option B).** `agent.py`: the agent remembers the last work it sent for review (`submitted`). When it
+replies in plain text right after review feedback: if its work did not change, the same review comes back with no AI
+call; if it changed, a hidden note tells it to send it for review now. Its reply stays in the chat above the review, so
+a question it asked can be answered by typing, or the PM just approves.
+
+**Checked (real model, temporary copy of the library project):** a question about its own work, a request to show
+another part's work, and a split all ended with the Approve button; the split showed exactly the changed stories.
+
+---
+
+## Parts that need nothing from the PM start at once (no made-up first question)
+
+**Problem (3 of 3 runs).** The shared rule made every part stop after its first message ("Write nothing before the PM
+has answered your first message"), so stories and criteria, which need nothing from the PM, invented a question to fill
+the stop ("one story or two?", "shall I read the requirements?").
+
+**Best practice followed.** Ask only when something important is missing and cannot be worked out; otherwise act by
+default and let the human check the result at the review gate; give each agent a self-contained brief.
+
+**Changes.**
+| File | Change |
+|---|---|
+| `prompts/rules.md` | First-message rule: ask first only when the work needs something from the PM that approved work does not answer; otherwise start at once and open the report with what was done (the PM checks it at review). |
+| `graph.py` — `load` | Opening note: "Begin your part now. The approved work above is your input; your result goes to the PM for review." |
+| `prompts/stories.md` | Removed "Decide this yourself without asking" (the shared rule covers it). |
+
+**Checked (real model, temporary copies of the library project).** Stories 3 of 3 and criteria 3 of 3 went straight to
+their review; the idea part still asks.
+
+**Follow-up (PM decision): requirements asks about gaps first.** With the new rule it went straight to review and missed
+a real gap (password reset). `prompts/requirements.md` got a "What your work needs" section: finding the gaps in the
+approved idea is part of its work; before writing, it asks about each (a behaviour the users clearly need that the idea
+does not describe, the target of each implied non-functional requirement), most important first; a skipped gap stays
+out. `prompts/rules.md`: "settled as it is" now says "unless your part says otherwise", so the two rules do not clash.
+Checked: requirements asked first 2 of 2 times (both found "how does a member find a book?"); stories still went
+straight to review.
+
+**Follow-up 2 (PM decision): every part opens with an intro and invites comments.** The PM wants each part to say
+what it will do now and ask for comments before starting, in its own words, without showing that a new agent took
+over, and without examples in the prompt. `prompts/rules.md`, first-message rule: say in a few sentences of your own,
+in the project's words, what you will do now, as the next step of the same conversation, and invite comments; ask
+there only for what the work really needs, never invent a question; a reply with no comment or wish means start.
+Checked: stories (2 runs) and criteria opened with an intro and an invitation, no made-up question, and went to review
+after "no comments"; requirements opened with an intro and a real gap question.
+
+---
+
+## Talk, story roles and small fixes from the library test run (problems 4, 5, 6)
+
+Each fix follows published practice (Anthropic prompting guidance, Mike Cohn / QUS for user stories, Microsoft's
+Guidelines for Human-AI Interaction, Nielsen's heuristics).
+
+| Problem | Fix | File |
+|---|---|---|
+| 4. System talk ("the stories part", "my draft", "the PM") | A positive rule with its reason instead of a "never mention" list: speak to the PM as "you", about the project only, describing work by what it gives the project | `prompts/rules.md`, `prompts/router.md` |
+| 4. Intros recited working rules | The first message says what the part will do for the project, not how it works | `prompts/rules.md` |
+| 4. Our own fixed texts used system words | Rewritten in project words: the closing message, "not written yet", "another change is being applied", the error text | `graph.py`, `app.py` |
+| 5. Wrong roles ("as a member, I want to be blocked"; "as the service") | The role is a real person who wants the outcome, never the system; a rule that limits a user belongs to the story of the action it governs (its acceptance criteria), a story of its own only when the PM asks or it is too big, with the enforcer as role | `prompts/stories.md` |
+| 6a. "You decide" was refused | Recommend one option with a reason and ask to confirm; a yes makes it an assumption | `prompts/rules.md` |
+| 6b. Unclear message got a fixed reply | The router sees the last six chat messages and, when unclear, writes one question that names the likely meaning | `graph.py`, `prompts/router.md` |
+| 6c. A paused part showed "not started" | The sidebar shows "paused" | `service.py` |
+| 6d. New version after a no-change check | Kept: that version links the part to the new earlier work | — |
+| 6e. "points is now: 5.0" | Numbers shown as "5" | `steps.py` |
+| 6f. Stories once skipped its intro | The opening note agrees with the intro rule: "Begin your part now with your first message to the PM. The approved work above is your input." | `graph.py` |
+
+**Not done (PM decision):** a code filter for system words (brittle; the cause is fixed instead).
+
+**Checked (real model, temporary copies of the library project).** Requirements: a clean intro and a real gap
+question. "You decide": a recommendation with a reason and "shall I take that as your decision?". Stories: intro with
+no invented question; every role a real person who benefits; the 5-reservation limit inside "reserve a book", no
+rule-only stories. Idle: the new closing message; an unclear "change the second one" got "Do you mean the second email
+story, S11 …?". A change to the idea during the stories review showed stories as "paused". No system words found.
+
+---
+
+## The Approve button also comes back after a change request
+
+**Problem (bakery full run).** With the whole plan approved, the PM asked for a change to the idea; the idea agent made
+it but posted the new summary as plain text instead of sending it for review, so there was no Approve button. The
+earlier fix only covered replies to review feedback, not the first turn of a change.
+
+**Change.** `agent.py`, `pm` node: the safety net now covers a plain reply to review feedback **or to a change request**
+(the hidden `handoff` message). After review feedback with the work unchanged, the same review comes back; whenever the
+work changed (since that review, or since the approved version for a change request), the agent is told to send it for
+review now.
+
+**Checked (real model, temporary copies of the library project).** Two change requests made after everything was
+approved: both ended in a review with the Approve button and the right "What changed" lines; in one the agent again
+posted plain text first and the safety net brought the review.
+
+---
+
+## Finished work always arrives as a review (not first as a chat message)
+
+**Problem (PM's own test, to-do list project).** The idea agent saved the finished summary, then wrote it into the chat
+("What may I have got wrong?") instead of submitting; the PM had to answer before the review with Approve appeared.
+The earlier safety nets only covered replies to review feedback or to a change request.
+
+**Best practice followed.** Completion is read from the state, not from the reply's words (Anthropic, agent loops);
+when a structured final result is expected, plain text is not accepted as the end (OpenAI Agents SDK output_type,
+LangGraph's response tool); guardrails live in code, with the instruction and its reason also in the prompt.
+
+**Changes.**
+| File | Change |
+|---|---|
+| `agent.py` — `pm` node | If the agent saved work in this turn that is now complete (done check and links pass) and not yet sent (differs from the last submitted or approved version), a plain reply is not shown as a question: a hidden note tells it to submit now. |
+| `prompts/rules.md` | "Your finished work reaches the PM only through submit, never as a chat message first: the review is where they read it and approve it." |
+
+**Checked.** Real model, to-do list idea, 3 runs: the summary came as a review with Approve the first time (the prompt
+line alone was enough). Scripted model that saves the summary and then posts it as chat: the safety net turned it
+into a review.
+
+---
+
+## A request at review is never lost behind a claimed hand-over
+
+**Problem (PM's own test, to-do list).** At the criteria review the PM asked for login and signup. The agent wrote
+"I'm passing it on" but never called `not_my_job`; the earlier safety net read "text reply, work unchanged" as "only a
+question" and showed the same review again, so the request was silently dropped (a false success).
+
+**Best practice followed.** Agents can claim actions they never took; completion must be bound to the action log, not
+the words, and a turn that needs a decision should end in an explicit action.
+
+**Changes.**
+| File | Change |
+|---|---|
+| `agent.py` | New action `answered` (only right after review feedback with the work unchanged: it was only a question; the same review comes back). After review feedback, a text reply with unchanged work no longer brings the review back by itself: a hidden note makes the agent choose `not_my_job` (anything outside its work) or `answered`. |
+| `prompts/rules.md` | Call `not_my_job` before telling the PM a request is passed on. |
+
+**Checked (real model, copy of the PM's to-do project).** "Add login and signup" at the criteria review reached the
+idea part (criteria shown as paused); a plain question at the review was answered and the same review came back with
+Approve.
+
+---
+
+## "Anything else?" after a change, before the paused part continues
+
+**Problem (PM's own test).** A change asked while a part was working (NFR2's priority at the start of criteria) went
+to requirements; right after the PM approved it, criteria continued and posted all its work: two messages in a row with
+no moment to ask or change anything else.
+
+**Best practice followed.** Interruption handling: acknowledge the side request, then steer back to the original task
+explicitly; human-in-the-loop UX: after a confirmed action, let the person choose the next step.
+
+**Changes.**
+| File | Change |
+|---|---|
+| `graph.py` — `load` | When a change is finished and a part is paused, the app asks (code text, no AI call): "Done: your change to the … is approved. Anything else you'd like to change or ask before we go back to the …?" The paused part waits in `resume`. |
+| `graph.py` — `Route`, `router`, `guard` | New router kind `continue`. Another change: handled as usual, then the check-in again; a question: answered, plus the check-in again; `continue` (or a wish for the paused part itself): the paused part goes on, opening with one short line on what the change means for its work. |
+| `prompts/router.md` | The `continue` kind. |
+| `service.py`, `app.py` | The sidebar shows the waiting part as "paused"; check-in messages get no "Plan complete" divider. |
+| `prompts/rules.md` | A comment on a part's first message means: take it into account and start at once (it had answered "Starting now." and waited). |
+
+**Checked (real model, copy of the PM's to-do project).** Change at the criteria opening → requirements review →
+approved → the check-in, criteria paused; "go on" → criteria continued to its review. With a question first: the answer
+plus the check-in again, then continue. A comment on the stories intro ("organized format") → straight to the review,
+2 of 2.
